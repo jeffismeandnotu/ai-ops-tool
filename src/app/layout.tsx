@@ -3,7 +3,7 @@ import { SessionProvider } from "next-auth/react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CleanBook AI — Operations Assistant",
+  title: "AI Ops Tool — Operations Assistant",
   description: "AI-powered email and calendar management for cleaning businesses",
 };
 

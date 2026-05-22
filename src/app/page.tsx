@@ -69,7 +69,7 @@ export default function Home() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">CleanBook AI</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Ops Tool</h1>
           <p className="text-gray-500 mb-8">Operations Assistant</p>
           <button
             onClick={() => signIn("google")}
@@ -117,7 +117,7 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gray-900">CleanBook AI</h1>
+          <h1 className="text-xl font-bold text-gray-900">AI Ops Tool</h1>
           <p className="text-sm text-gray-500">Operations Assistant</p>
         </div>
         <div className="flex items-center gap-4">

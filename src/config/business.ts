@@ -8,7 +8,7 @@
 
 export const BUSINESS = {
   // --- Company ---
-  name: "CleanBook Pro",
+  name: "My Business",
   tagline: "Professional Cleaning Services",
   timezone: "America/Vancouver",
   currency: "CAD",

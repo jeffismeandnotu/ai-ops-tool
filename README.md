@@ -1,4 +1,4 @@
-# CleanBook AI — Operations Assistant
+# AI Ops Tool — Operations Assistant
 
 AI-powered email and calendar management for service businesses. Uses Claude AI to read emails, manage schedules, send confirmations, and coordinate between owner, employees, and clients.
 
