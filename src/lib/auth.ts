@@ -1,6 +1,8 @@
 import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
+const PROD_URL = "https://ai-ops-tool.vercel.app";
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
@@ -21,6 +23,7 @@ export const authOptions: NextAuthOptions = {
           ].join(" "),
           access_type: "offline",
           prompt: "consent",
+          redirect_uri: `${PROD_URL}/api/auth/callback/google`,
         },
       },
     }),
@@ -37,13 +40,6 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       (session as any).accessToken = token.accessToken;
       return session;
-    },
-    async redirect({ url, baseUrl }) {
-      // Always redirect to production URL, never preview
-      const prodUrl = "https://ai-ops-tool.vercel.app";
-      if (url.startsWith("/")) return `${prodUrl}${url}`;
-      if (url.startsWith(prodUrl)) return url;
-      return prodUrl;
     },
   },
 };
