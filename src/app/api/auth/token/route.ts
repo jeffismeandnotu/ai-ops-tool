@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import fs from "fs";
 import path from "path";
 
@@ -8,7 +9,7 @@ const TOKEN_FILE = path.join(process.cwd(), "data", "token.json");
 // After first login, save the refresh token so the cron can use it
 // without a browser session active.
 export async function POST(req: NextRequest) {
-  const session = await auth();
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

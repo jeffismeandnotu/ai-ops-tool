@@ -41,8 +41,9 @@ export async function GET(req: NextRequest) {
 
 // Also support manual trigger via POST (from the UI)
 export async function POST(req: NextRequest) {
-  const { auth } = await import("@/lib/auth");
-  const session = await auth();
+  const { getServerSession } = await import("next-auth");
+    const { authOptions } = await import("@/lib/auth");
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

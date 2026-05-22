@@ -209,7 +209,7 @@ When you receive an email:
 
 You have access to Gmail (read, draft, label) and Google Calendar (create, update, list, find free time).`,
   },
-} as const;
+};
 
 // --- Types ---
 export type ServiceId = (typeof BUSINESS.services)[number]["id"];
@@ -244,8 +244,8 @@ export function renderTemplate(
   variables: Record<string, string>
 ): { subject: string; body: string } {
   const template = BUSINESS.emailTemplates[templateKey];
-  let subject = template.subject;
-  let body = template.body;
+  let subject: string = template.subject;
+  let body: string = template.body;
 
   // Replace business-level variables
   const businessVars: Record<string, string> = {
