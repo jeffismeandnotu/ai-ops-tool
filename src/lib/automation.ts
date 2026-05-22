@@ -124,8 +124,8 @@ export type EmailClassification =
   | "SPAM_IRRELEVANT";
 
 // --- The Automation System Prompt ---
-function buildAutomationPrompt(): string {
-  const opsContext = getOpsLogSummary();
+async function buildAutomationPrompt(): Promise<string> {
+  const opsContext = await getOpsLogSummary();
 
   return `You are the AUTONOMOUS operations AI for ${BUSINESS.name}.
 
@@ -384,7 +384,7 @@ async function executeTool(
       }
       case "send_email": {
         const sent = await gmail.sendEmail(accessToken, input.to, input.subject, input.body, input.cc);
-        appendOperation({
+        await appendOperation({
           type: "email_sent",
           to: input.to,
           subject: input.subject,
@@ -395,7 +395,7 @@ async function executeTool(
       }
       case "draft_email": {
         const draft = await gmail.createDraft(accessToken, input.to, input.subject, input.body, input.cc);
-        appendOperation({
+        await appendOperation({
           type: "email_drafted",
           to: input.to,
           subject: input.subject,
@@ -436,7 +436,7 @@ async function executeTool(
           colorId: input.colorId,
           reminders: [{ method: "email", minutes: 60 }, { method: "popup", minutes: 30 }],
         });
-        appendOperation({
+        await appendOperation({
           type: "booking_created",
           calendarEventId: event.id || undefined,
           details: `Created booking: ${input.summary} at ${input.startTime}`,
@@ -452,7 +452,7 @@ async function executeTool(
           location: input.location,
           description: input.description,
         });
-        appendOperation({
+        await appendOperation({
           type: "booking_updated",
           calendarEventId: input.eventId,
           details: `Updated booking: ${input.eventId}`,
@@ -462,7 +462,7 @@ async function executeTool(
       }
       case "cancel_booking": {
         await calendar.deleteEvent(accessToken, input.eventId);
-        appendOperation({
+        await appendOperation({
           type: "booking_cancelled",
           calendarEventId: input.eventId,
           details: `Cancelled booking: ${input.eventId}`,
@@ -471,7 +471,7 @@ async function executeTool(
         return JSON.stringify({ success: true });
       }
       case "log_operation": {
-        const op = appendOperation({
+        const op = await appendOperation({
           type: input.type,
           emailId: input.emailId,
           threadId: input.threadId,
@@ -486,21 +486,20 @@ async function executeTool(
         return JSON.stringify({ logged: true, operationId: op.id });
       }
       case "mark_email_done": {
-        markEmailProcessed({
+        await markEmailProcessed({
           messageId: input.messageId,
           threadId: input.threadId || "",
           processedAt: new Date().toISOString(),
           classification: input.classification,
           actionTaken: input.actionTaken,
-          operationIds: [],
         });
         return JSON.stringify({ marked: true });
       }
       case "check_already_processed": {
-        return JSON.stringify({ processed: isEmailProcessed(input.messageId) });
+        return JSON.stringify({ processed: await isEmailProcessed(input.messageId) });
       }
       case "get_ops_summary": {
-        return getOpsLogSummary();
+        return await getOpsLogSummary();
       }
       default:
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });
@@ -533,7 +532,10 @@ export async function runAutomationCycle(accessToken: string): Promise<{
   try {
     // Fetch unread emails
     const emails = await gmail.getRecentEmails(accessToken, 20);
-    const unprocessed = emails.filter((e) => !isEmailProcessed(e.id));
+    const unprocessed: typeof emails = [];
+    for (const e of emails) {
+      if (!(await isEmailProcessed(e.id))) unprocessed.push(e);
+    }
 
     if (unprocessed.length === 0) {
       appendOperation({
@@ -569,7 +571,7 @@ EMAILS TO PROCESS:
 ${emailSummaries}`;
 
     // Run the AI with tool loop
-    const systemPrompt = buildAutomationPrompt();
+    const systemPrompt = await buildAutomationPrompt();
     let currentMessages: Anthropic.MessageParam[] = [
       { role: "user", content: userMessage },
     ];
