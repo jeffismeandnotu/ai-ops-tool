@@ -88,7 +88,7 @@ Your {{service}} has been confirmed for {{date}} at {{time}}.
 Your cleaner {{employeeName}} will arrive at your location at {{address}}.
 
 Duration: approximately {{duration}}.
-Total: ${{price}} {{currency}}.
+Total: \${{price}} {{currency}}.
 
 If you need to reschedule, please reply to this email or call us at {{businessPhone}}.
 
