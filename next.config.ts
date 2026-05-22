@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  env: {
+    NEXTAUTH_URL: "https://ai-ops-tool.vercel.app",
+  },
 };
 
 export default nextConfig;

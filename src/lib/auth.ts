@@ -38,6 +38,13 @@ export const authOptions: NextAuthOptions = {
       (session as any).accessToken = token.accessToken;
       return session;
     },
+    async redirect({ url, baseUrl }) {
+      // Always redirect to production URL, never preview
+      const prodUrl = "https://ai-ops-tool.vercel.app";
+      if (url.startsWith("/")) return `${prodUrl}${url}`;
+      if (url.startsWith(prodUrl)) return url;
+      return prodUrl;
+    },
   },
 };
 
