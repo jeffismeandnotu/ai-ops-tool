@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 
-const OPS_DIR = path.join(process.cwd(), "data");
+const OPS_DIR = process.env.VERCEL ? "/tmp" : path.join(process.cwd(), "data");
 const OPS_LOG = path.join(OPS_DIR, "operations.json");
 const PROCESSED_LOG = path.join(OPS_DIR, "processed_emails.json");
 
