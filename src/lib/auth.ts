@@ -23,6 +23,7 @@ export const authOptions: NextAuthOptions = {
           ].join(" "),
           access_type: "offline",
           prompt: "select_account",
+          redirect_uri: `${process.env.NEXTAUTH_URL || "https://ai-ops-tool-git-main-jeffismeandnotus-projects.vercel.app"}/api/auth/callback/google`,
         },
       },
     }),

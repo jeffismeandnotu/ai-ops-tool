@@ -64,65 +64,72 @@ export const BUSINESS = {
     },
   ],
 
-  // --- Services (from glowcleaningservices.ca) ---
-  // Prices are quote-based on their site. These are Whistler-market estimates.
-  // Matt can adjust before going live.
+  // --- Services (Vancouver/Whistler market pricing, 2026) ---
+  // Based on Vancouver avg: $40-60/hr, flat rates from market research.
+  // Whistler premium ~20-30% above Vancouver metro.
   services: [
     {
       id: "regular",
       name: "Regular Clean",
-      duration: 120,
-      price: 180,
-      description: "Standard cleaning for vacation rentals, Airbnb, residential, and common areas. Includes dusting, vacuuming, mopping, bathroom and kitchen cleaning.",
+      duration: 150, // 2.5 hrs avg for 2-3 bed
+      price: 200,
+      description: "Standard residential cleaning. Dusting, vacuuming, mopping, bathroom and kitchen sanitization. Ideal for regular upkeep of homes and rental units.",
     },
     {
       id: "deep",
       name: "Deep Clean",
-      duration: 240,
-      price: 350,
-      description: "Thorough deep cleaning for vacation rentals, Airbnb, and residential properties. Includes appliances, baseboards, inside cabinets, and detailed sanitization.",
+      duration: 270, // 4.5 hrs
+      price: 380,
+      description: "Comprehensive deep cleaning including inside appliances, baseboards, door frames, inside cabinets, window tracks, and detailed sanitization. Recommended every 3-6 months.",
     },
     {
       id: "turnover",
       name: "Vacation Rental Turnover",
       duration: 150,
-      price: 200,
-      description: "Quick turnover clean between guest stays. Linens, restocking, garbage, full bathroom and kitchen reset. Ready for next guest arrival.",
+      price: 220,
+      description: "Guest-ready turnover between stays. Full clean, linen change, restocking essentials, garbage removal, bathroom and kitchen reset. Ensures 5-star reviews.",
+    },
+    {
+      id: "moveout",
+      name: "Move-In / Move-Out Clean",
+      duration: 300, // 5 hrs
+      price: 450,
+      description: "Thorough move-in or move-out cleaning for landlord inspection. Every surface, inside all appliances, closets, baseboards, windows. Helps recover damage deposits.",
     },
     {
       id: "post-construction",
       name: "Post-Construction Clean",
-      duration: 360,
-      price: 500,
-      description: "Prepare properties for client delivery after renovations. Dust removal, debris cleanup, window cleaning, surface polishing.",
+      duration: 360, // 6 hrs
+      price: 550,
+      description: "Construction dust removal, debris cleanup, surface polishing, window cleaning. Prepares newly built or renovated properties for occupancy.",
     },
     {
       id: "pressure-washing",
       name: "Pressure Washing",
       duration: 180,
-      price: 300,
-      description: "High-powered cleaning for driveways, common areas, decks, and sidings. Removes dirt, grime, moss, and stains.",
+      price: 320,
+      description: "High-powered exterior cleaning for driveways, decks, sidings, patios, and common areas. Removes dirt, grime, moss, and seasonal buildup.",
     },
     {
       id: "carpet",
       name: "Carpet Cleaning",
       duration: 120,
-      price: 200,
-      description: "Professional carpet cleaning to remove dirt, stains, and allergens. Leaves carpets fresh, clean, and like-new.",
+      price: 220,
+      description: "Professional carpet cleaning. Removes deep dirt, stains, and allergens. Hot water extraction method. Price per average-sized home — large homes quoted separately.",
     },
     {
       id: "laundry",
       name: "Laundry Service",
       duration: 90,
-      price: 80,
-      description: "Laundry service for vacation rentals, Airbnb, and residential. Wash, dry, fold, and restock linens.",
+      price: 85,
+      description: "Wash, dry, fold, and restock linens for vacation rentals and Airbnb properties. Per standard load of linens for a 2-3 bedroom unit.",
     },
     {
       id: "commercial",
       name: "Commercial / Office Clean",
       duration: 180,
-      price: 250,
-      description: "Government offices, commercial properties, and shared workspaces. Includes all surfaces, restrooms, kitchenettes, and common areas.",
+      price: 280,
+      description: "Offices, government buildings, and commercial spaces. All surfaces, restrooms, kitchenettes, common areas, and reception. Regular contracts available at reduced rates.",
     },
   ],
 
