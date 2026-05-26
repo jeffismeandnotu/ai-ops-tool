@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { BUSINESS } from "@/config/business";
 import * as gmail from "@/lib/gmail";
 import * as calendar from "@/lib/calendar";
+import * as clientsDb from "@/lib/clients-db";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -202,6 +203,69 @@ const TOOLS: Anthropic.Tool[] = [
       required: [],
     },
   },
+  {
+    name: "find_or_create_client",
+    description: "Look up a client by email. Returns their record and booking history, or creates a new record. Call FIRST for every client interaction.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string" },
+        name: { type: "string" },
+        phone: { type: "string" },
+        address: { type: "string" },
+        city: { type: "string" },
+        postalCode: { type: "string" },
+      },
+      required: ["email"],
+    },
+  },
+  {
+    name: "create_booking_record",
+    description: "Store a booking in the database after creating the calendar event.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        clientId: { type: "string" },
+        serviceId: { type: "string" },
+        serviceName: { type: "string" },
+        price: { type: "number" },
+        date: { type: "string" },
+        time: { type: "string" },
+        duration: { type: "number" },
+        address: { type: "string" },
+        employeeName: { type: "string" },
+        calendarEventId: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["clientId", "serviceId", "serviceName", "price", "date", "time", "duration", "address"],
+    },
+  },
+  {
+    name: "get_client_history",
+    description: "Get a client's booking history, total spent, and visit count.",
+    input_schema: {
+      type: "object" as const,
+      properties: { email: { type: "string" } },
+      required: ["email"],
+    },
+  },
+  {
+    name: "update_client",
+    description: "Update client info when you learn new details.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        clientId: { type: "string" },
+        name: { type: "string" },
+        phone: { type: "string" },
+        address: { type: "string" },
+        city: { type: "string" },
+        postalCode: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["clientId"],
+    },
+  },
 ];
 
 // --- Tool Executor ---
@@ -354,6 +418,62 @@ async function executeTool(
           null,
           2
         );
+      }
+      case "find_or_create_client": {
+        const result = await clientsDb.findOrCreateClient({
+          email: input.email,
+          name: input.name,
+          phone: input.phone,
+          address: input.address,
+          city: input.city,
+          postalCode: input.postalCode,
+          source: "chat",
+        });
+        const history = await clientsDb.getClientBookings(result.client.id);
+        return JSON.stringify({
+          client: result.client,
+          isNewClient: result.created,
+          missingFields: result.missingFields,
+          bookingHistory: history.slice(0, 5),
+          totalBookings: history.length,
+        }, null, 2);
+      }
+      case "create_booking_record": {
+        const booking = await clientsDb.createBooking({
+          clientId: input.clientId,
+          serviceId: input.serviceId,
+          serviceName: input.serviceName,
+          price: input.price,
+          date: input.date,
+          time: input.time,
+          duration: input.duration,
+          address: input.address,
+          employeeName: input.employeeName,
+          calendarEventId: input.calendarEventId,
+          notes: input.notes,
+        });
+        return JSON.stringify({ success: true, bookingId: booking.id });
+      }
+      case "get_client_history": {
+        const history = await clientsDb.getClientHistory(input.email);
+        return JSON.stringify({
+          client: history.client,
+          recentBookings: history.bookings.slice(0, 10),
+          totalSpent: history.totalSpent,
+          bookingCount: history.bookingCount,
+          isReturningClient: history.bookingCount > 0,
+        }, null, 2);
+      }
+      case "update_client": {
+        const updated = await clientsDb.updateClient(input.clientId, {
+          name: input.name,
+          phone: input.phone,
+          address: input.address,
+          city: input.city,
+          postalCode: input.postalCode,
+          notes: input.notes,
+        });
+        return JSON.stringify({ success: true, client: updated });
       }
       default:
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });

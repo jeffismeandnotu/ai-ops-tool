@@ -109,6 +109,7 @@ import {
   getOpsLogSummary,
   readOpsLog,
 } from "@/lib/ops-log";
+import * as clientsDb from "@/lib/clients-db";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -385,6 +386,87 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
       required: [],
     },
   },
+  // --- Client Database Tools ---
+  {
+    name: "find_or_create_client",
+    description: "Look up a client by email. If they exist, returns their record and booking history. If not, creates a new record. Call this FIRST for every email — before booking, quoting, or responding. Returns missing fields that need to be asked for.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string", description: "Client email address" },
+        name: { type: "string", description: "Client full name" },
+        firstName: { type: "string", description: "Client first name" },
+        lastName: { type: "string", description: "Client last name" },
+        phone: { type: "string", description: "Client phone number" },
+        address: { type: "string", description: "Service address" },
+        city: { type: "string", description: "City" },
+        postalCode: { type: "string", description: "Postal code" },
+      },
+      required: ["email"],
+    },
+  },
+  {
+    name: "create_booking_record",
+    description: "Create a booking record in the database AFTER creating the calendar event. Links the booking to the client record for history tracking.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        clientId: { type: "string", description: "Client ID from find_or_create_client" },
+        serviceId: { type: "string", description: "Service ID (e.g., 'regular', 'deep', 'turnover')" },
+        serviceName: { type: "string", description: "Service name for display" },
+        price: { type: "number", description: "Price in CAD" },
+        date: { type: "string", description: "Date (YYYY-MM-DD)" },
+        time: { type: "string", description: "Time (HH:MM)" },
+        duration: { type: "number", description: "Duration in minutes" },
+        address: { type: "string", description: "Service address" },
+        employeeName: { type: "string", description: "Assigned team/cleaner name" },
+        employeeEmail: { type: "string", description: "Assigned team/cleaner email" },
+        calendarEventId: { type: "string", description: "Google Calendar event ID" },
+        notes: { type: "string", description: "Any special instructions" },
+      },
+      required: ["clientId", "serviceId", "serviceName", "price", "date", "time", "duration", "address"],
+    },
+  },
+  {
+    name: "get_client_history",
+    description: "Get a client's full booking history, total spent, and booking count. Use this to personalize responses for returning clients.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string", description: "Client email address" },
+      },
+      required: ["email"],
+    },
+  },
+  {
+    name: "update_client",
+    description: "Update a client's information when you learn new details (phone, address change, notes).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        clientId: { type: "string", description: "Client ID" },
+        name: { type: "string" },
+        phone: { type: "string" },
+        address: { type: "string" },
+        city: { type: "string" },
+        postalCode: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["clientId"],
+    },
+  },
+  {
+    name: "cancel_booking_record",
+    description: "Update a booking record to cancelled status in the database.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        calendarEventId: { type: "string", description: "Calendar event ID of the booking to cancel" },
+        reason: { type: "string", description: "Cancellation reason" },
+      },
+      required: ["calendarEventId"],
+    },
+  },
 ];
 
 // --- Tool Executor ---
@@ -523,6 +605,75 @@ async function executeTool(
       }
       case "get_ops_summary": {
         return await getOpsLogSummary();
+      }
+      // --- Client Database Tools ---
+      case "find_or_create_client": {
+        const result = await clientsDb.findOrCreateClient({
+          email: input.email,
+          name: input.name,
+          firstName: input.firstName,
+          lastName: input.lastName,
+          phone: input.phone,
+          address: input.address,
+          city: input.city,
+          postalCode: input.postalCode,
+          source: "email",
+        });
+        // Also get booking history for returning clients
+        const history = await clientsDb.getClientBookings(result.client.id);
+        return JSON.stringify({
+          client: result.client,
+          isNewClient: result.created,
+          missingFields: result.missingFields,
+          bookingHistory: history.slice(0, 5),
+          totalBookings: history.length,
+        }, null, 2);
+      }
+      case "create_booking_record": {
+        const booking = await clientsDb.createBooking({
+          clientId: input.clientId,
+          serviceId: input.serviceId,
+          serviceName: input.serviceName,
+          price: input.price,
+          date: input.date,
+          time: input.time,
+          duration: input.duration,
+          address: input.address,
+          employeeName: input.employeeName,
+          employeeEmail: input.employeeEmail,
+          calendarEventId: input.calendarEventId,
+          notes: input.notes,
+        });
+        return JSON.stringify({ success: true, bookingId: booking.id });
+      }
+      case "get_client_history": {
+        const history = await clientsDb.getClientHistory(input.email);
+        return JSON.stringify({
+          client: history.client,
+          recentBookings: history.bookings.slice(0, 10),
+          totalSpent: history.totalSpent,
+          bookingCount: history.bookingCount,
+          isReturningClient: history.bookingCount > 0,
+        }, null, 2);
+      }
+      case "update_client": {
+        const updated = await clientsDb.updateClient(input.clientId, {
+          name: input.name,
+          phone: input.phone,
+          address: input.address,
+          city: input.city,
+          postalCode: input.postalCode,
+          notes: input.notes,
+        });
+        return JSON.stringify({ success: true, client: updated });
+      }
+      case "cancel_booking_record": {
+        const booking = await clientsDb.getBookingByCalendarEvent(input.calendarEventId);
+        if (booking) {
+          await clientsDb.updateBookingStatus(booking.id, "cancelled", input.reason);
+          return JSON.stringify({ success: true, bookingId: booking.id });
+        }
+        return JSON.stringify({ success: false, error: "Booking not found for this calendar event" });
       }
       default:
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });

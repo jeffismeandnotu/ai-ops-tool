@@ -1,213 +1,255 @@
 // ============================================================
-// BUSINESS CONFIGURATION
+// BUSINESS CONFIGURATION — Glow Cleaning Services
 // ============================================================
 // All business-specific details live here.
 // Change ANY value to customize for a different client.
-// Nothing else in the codebase needs to change.
 // ============================================================
 
 export const BUSINESS = {
   // --- Company ---
-  name: "My Business",
-  tagline: "Professional Cleaning Services",
+  name: "Glow Cleaning Services",
+  tagline: "Professional Cleaning Services — Whistler & Sea to Sky",
+  website: "https://www.glowcleaningservices.ca",
   timezone: "America/Vancouver",
   currency: "CAD",
   locale: "en-CA",
+  phone: "604-902-0399",
 
   // --- People ---
-  // Owner/manager who runs the business
   owner: {
-    name: "Owner Name",
-    email: "owner@example.com",
-    phone: "+1-604-555-0001",
+    name: "Matt",
+    email: "", // fill before demo
+    phone: "604-902-0399",
     role: "owner" as const,
   },
 
-  // Employees / cleaners
+  // Administrator (AI role)
+  administrator: {
+    name: "Glow Cleaning Administrator",
+    signOff: "Glow Cleaning Services",
+  },
+
   employees: [
     {
-      name: "Employee 1",
-      email: "employee1@example.com",
-      phone: "+1-604-555-0002",
+      name: "Team A",
+      email: "", // fill before demo
+      phone: "",
       role: "cleaner" as const,
-      specialties: ["residential", "deep-clean"],
+      specialties: ["residential", "vacation-rental", "airbnb"],
       availability: {
         monday: { start: "08:00", end: "17:00" },
         tuesday: { start: "08:00", end: "17:00" },
         wednesday: { start: "08:00", end: "17:00" },
         thursday: { start: "08:00", end: "17:00" },
         friday: { start: "08:00", end: "17:00" },
-        saturday: null, // off
+        saturday: { start: "09:00", end: "15:00" },
         sunday: null,
       },
     },
-    // Add more employees as needed
+    {
+      name: "Team B",
+      email: "", // fill before demo
+      phone: "",
+      role: "cleaner" as const,
+      specialties: ["commercial", "deep-clean", "post-construction"],
+      availability: {
+        monday: { start: "08:00", end: "17:00" },
+        tuesday: { start: "08:00", end: "17:00" },
+        wednesday: { start: "08:00", end: "17:00" },
+        thursday: { start: "08:00", end: "17:00" },
+        friday: { start: "08:00", end: "17:00" },
+        saturday: null,
+        sunday: null,
+      },
+    },
   ],
 
-  // --- Services ---
+  // --- Services (from glowcleaningservices.ca) ---
+  // Prices are quote-based on their site. These are Whistler-market estimates.
+  // Matt can adjust before going live.
   services: [
     {
       id: "regular",
       name: "Regular Clean",
-      duration: 120, // minutes
-      price: 150, // CAD
-      description: "Standard residential cleaning",
+      duration: 120,
+      price: 180,
+      description: "Standard cleaning for vacation rentals, Airbnb, residential, and common areas. Includes dusting, vacuuming, mopping, bathroom and kitchen cleaning.",
     },
     {
       id: "deep",
       name: "Deep Clean",
       duration: 240,
-      price: 300,
-      description: "Thorough deep cleaning including appliances",
+      price: 350,
+      description: "Thorough deep cleaning for vacation rentals, Airbnb, and residential properties. Includes appliances, baseboards, inside cabinets, and detailed sanitization.",
     },
     {
-      id: "moveout",
-      name: "Move-Out Clean",
-      duration: 360,
-      price: 450,
-      description: "Complete move-out cleaning for landlord inspection",
-    },
-    {
-      id: "office",
-      name: "Office Clean",
-      duration: 180,
+      id: "turnover",
+      name: "Vacation Rental Turnover",
+      duration: 150,
       price: 200,
-      description: "Commercial office cleaning",
+      description: "Quick turnover clean between guest stays. Linens, restocking, garbage, full bathroom and kitchen reset. Ready for next guest arrival.",
+    },
+    {
+      id: "post-construction",
+      name: "Post-Construction Clean",
+      duration: 360,
+      price: 500,
+      description: "Prepare properties for client delivery after renovations. Dust removal, debris cleanup, window cleaning, surface polishing.",
+    },
+    {
+      id: "pressure-washing",
+      name: "Pressure Washing",
+      duration: 180,
+      price: 300,
+      description: "High-powered cleaning for driveways, common areas, decks, and sidings. Removes dirt, grime, moss, and stains.",
+    },
+    {
+      id: "carpet",
+      name: "Carpet Cleaning",
+      duration: 120,
+      price: 200,
+      description: "Professional carpet cleaning to remove dirt, stains, and allergens. Leaves carpets fresh, clean, and like-new.",
+    },
+    {
+      id: "laundry",
+      name: "Laundry Service",
+      duration: 90,
+      price: 80,
+      description: "Laundry service for vacation rentals, Airbnb, and residential. Wash, dry, fold, and restock linens.",
+    },
+    {
+      id: "commercial",
+      name: "Commercial / Office Clean",
+      duration: 180,
+      price: 250,
+      description: "Government offices, commercial properties, and shared workspaces. Includes all surfaces, restrooms, kitchenettes, and common areas.",
     },
   ],
 
   // --- Email Templates ---
-  // These are the base templates. AI will personalize them.
   emailTemplates: {
     bookingConfirmation: {
       subject: "Booking Confirmed — {{service}} on {{date}}",
       body: `Hi {{clientName}},
 
-Your {{service}} has been confirmed for {{date}} at {{time}}.
+Your {{service}} is confirmed for {{date}} at {{time}}.
 
-Your cleaner {{employeeName}} will arrive at your location at {{address}}.
+Address: {{address}}
+Duration: {{duration}}
+Total: ${{price}} CAD
 
-Duration: approximately {{duration}}.
-Total: \${{price}} {{currency}}.
+Your cleaning team will arrive on time. Please ensure access to the property.
 
-If you need to reschedule, please reply to this email or call us at {{businessPhone}}.
+If you need to make any changes, just reply to this email or call us at 604-902-0399.
 
-Thank you for choosing {{businessName}}!
-
-Best regards,
-{{businessName}} Team`,
+{{signOff}}`,
     },
 
     reminder: {
       subject: "Reminder: {{service}} Tomorrow at {{time}}",
       body: `Hi {{clientName}},
 
-This is a friendly reminder that your {{service}} is scheduled for tomorrow, {{date}} at {{time}}.
+Quick reminder — your {{service}} is tomorrow, {{date}} at {{time}}.
 
-Your cleaner {{employeeName}} will arrive at {{address}}.
+Address: {{address}}
 
-Please ensure access to the property. If you need to make any changes, reply to this email.
+Please make sure we can access the property. If anything's changed, reply to this email.
 
-See you tomorrow!
-{{businessName}} Team`,
+See you tomorrow,
+{{signOff}}`,
     },
 
     employeeSchedule: {
-      subject: "Your Schedule for {{date}}",
-      body: `Hi {{employeeName}},
+      subject: "Job Details — {{date}} at {{time}}",
+      body: `Hi,
 
-Here is your schedule for {{date}}:
+You have a {{service}} scheduled:
 
-{{scheduleDetails}}
+Date: {{date}} at {{time}}
+Address: {{address}}
+Client: {{clientName}}
+Duration: {{duration}}
+Notes: {{notes}}
 
-Please confirm by replying to this email.
+Please confirm by replying.
 
-Thanks,
-{{businessName}} Management`,
-    },
-
-    followUp: {
-      subject: "How was your cleaning? — {{businessName}}",
-      body: `Hi {{clientName}},
-
-We hope your {{service}} on {{date}} met your expectations!
-
-If you have any feedback or would like to schedule your next cleaning, just reply to this email.
-
-Thank you for your business!
-{{businessName}} Team`,
-    },
-
-    reschedule: {
-      subject: "Schedule Change — {{service}} moved to {{newDate}}",
-      body: `Hi {{clientName}},
-
-Your {{service}} has been rescheduled from {{oldDate}} to {{newDate}} at {{newTime}}.
-
-Your cleaner will be {{employeeName}}.
-
-If this doesn't work for you, please reply and we'll find another time.
-
-Apologies for any inconvenience.
-{{businessName}} Team`,
+{{signOff}}`,
     },
 
     cancellation: {
       subject: "Booking Cancelled — {{service}} on {{date}}",
       body: `Hi {{clientName}},
 
-Your {{service}} scheduled for {{date}} at {{time}} has been cancelled.
+Your {{service}} on {{date}} at {{time}} has been cancelled.
 
-If you'd like to rebook, reply to this email or visit our booking page.
+If you'd like to rebook, just reply to this email or call us at 604-902-0399.
 
-Thank you,
-{{businessName}} Team`,
+{{signOff}}`,
+    },
+
+    ownerNotification: {
+      subject: "{{notificationType}}: {{clientName}} — {{service}}",
+      body: `Matt,
+
+{{details}}
+
+Client: {{clientName}} ({{clientEmail}})
+Service: {{service}}
+Date: {{date}} at {{time}}
+Address: {{address}}
+Price: ${{price}} CAD
+
+{{signOff}}`,
     },
   },
 
   // --- Calendar Settings ---
   calendar: {
-    bufferMinutes: 30, // time between appointments
-    workingHours: { start: "08:00", end: "18:00" },
-    workingDays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    bufferMinutes: 30,
+    workingHours: { start: "08:00", end: "17:00" },
+    workingDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
     colorCodes: {
-      regular: "9", // Blueberry
-      deep: "5", // Banana
-      moveout: "11", // Tomato
-      office: "7", // Peacock
-    },
+      regular: "9",
+      deep: "5",
+      turnover: "10",
+      "post-construction": "11",
+      "pressure-washing": "7",
+      carpet: "3",
+      laundry: "2",
+      commercial: "1",
+    } as Record<string, string>,
   },
 
   // --- AI Behavior ---
   ai: {
     model: "claude-sonnet-4-20250514",
-    systemPrompt: `You are the AI operations assistant for {{businessName}}, a professional cleaning service.
+    systemPrompt: `You are the administrator for {{businessName}}, a professional cleaning service based in Whistler and the Sea to Sky corridor.
 
 Your role:
-1. Read and understand incoming emails from clients, employees, and the manager
-2. Draft appropriate responses based on the email templates and context
+1. Read and understand incoming emails from clients and property managers
+2. Draft and send appropriate responses
 3. Manage the Google Calendar — check availability, create/update/cancel appointments
-4. Send reminders for upcoming appointments
-5. Notify the right people about schedule changes
-6. Keep the manager informed of important updates
+4. Keep Matt (the owner) informed of all bookings, cancellations, and issues
+5. Store client information in the database for every interaction
 
-Business rules:
-- Always check calendar availability before confirming a booking
-- Include a {{bufferMinutes}}-minute buffer between appointments
-- Working hours: {{workingHours.start}} to {{workingHours.end}}
-- Working days: {{workingDays}}
-- Always CC the manager on client-facing emails if it involves money or complaints
-- Be professional, warm, and concise
-- Use the client's first name
-- Always include the full address and time in confirmations
+You handle: vacation rentals, Airbnb turnovers, residential, commercial, post-construction, pressure washing, carpet cleaning, and laundry.
 
 When you receive an email:
-1. Classify it: booking request, reschedule, cancellation, complaint, inquiry, or internal
-2. Determine the appropriate action (draft email, create/update calendar event, notify someone)
-3. Execute the action
-4. Report what you did
+1. Extract the sender's email address
+2. Call find_or_create_client to get or create their record
+3. If any required fields are missing (name, address for bookings), ask for them
+4. Classify the email and execute the workflow
+5. After booking, call create_booking_record to store it in the database
+6. For returning clients, reference their history to personalize the response
 
-You have access to Gmail (read, draft, label) and Google Calendar (create, update, list, find free time).`,
+Business context:
+- Based in Whistler, BC — many clients are vacation rental and Airbnb property managers
+- Turnover cleans between guest stays are time-sensitive
+- Many properties require supply restocking (linens, toiletries)
+- Operating hours: 8am-5pm Mon-Fri, 9am-3pm Saturday
+- {{bufferMinutes}}-minute buffer between appointments
+- Always check calendar before confirming
+- CC Matt on all bookings and cancellations`,
   },
 };
 
@@ -229,9 +271,9 @@ export interface Booking {
   client: Client;
   service: ServiceId;
   employee: string;
-  date: string; // ISO
-  time: string; // HH:mm
-  duration: number; // minutes
+  date: string;
+  time: string;
+  duration: number;
   price: number;
   status: "confirmed" | "pending" | "cancelled" | "completed";
   calendarEventId?: string;
@@ -247,12 +289,12 @@ export function renderTemplate(
   let subject: string = template.subject;
   let body: string = template.body;
 
-  // Replace business-level variables
   const businessVars: Record<string, string> = {
     businessName: BUSINESS.name,
-    businessPhone: BUSINESS.owner.phone,
+    businessPhone: BUSINESS.phone,
     currency: BUSINESS.currency,
     bufferMinutes: String(BUSINESS.calendar.bufferMinutes),
+    signOff: BUSINESS.administrator.signOff,
   };
 
   const allVars = { ...businessVars, ...variables };
@@ -267,8 +309,18 @@ export function renderTemplate(
 }
 
 // --- Service Lookup ---
-export function getService(id: ServiceId) {
+export function getService(id: string) {
   return BUSINESS.services.find((s) => s.id === id);
+}
+
+export function findServiceByName(name: string) {
+  const lower = name.toLowerCase();
+  return BUSINESS.services.find(
+    (s) =>
+      s.name.toLowerCase().includes(lower) ||
+      s.id.toLowerCase().includes(lower) ||
+      s.description.toLowerCase().includes(lower)
+  );
 }
 
 export function getEmployee(email: string) {

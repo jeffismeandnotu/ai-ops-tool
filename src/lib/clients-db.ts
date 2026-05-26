@@ -1,0 +1,350 @@
+import { neon } from "@neondatabase/serverless";
+
+// ============================================================
+// CLIENT DATABASE — Neon Postgres
+// ============================================================
+// Stores client records, booking history, and email log.
+// AI tools call these functions to read/write client data.
+// All tables auto-created on first access (idempotent).
+// ============================================================
+
+function getDb() {
+  return neon(process.env.DATABASE_URL!);
+}
+
+// --- Types ---
+export interface Client {
+  id: string;
+  email: string;
+  name: string;
+  first_name: string | null;
+  last_name: string | null;
+  phone: string | null;
+  address: string | null;
+  city: string | null;
+  postal_code: string | null;
+  notes: string | null;
+  source: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Booking {
+  id: string;
+  client_id: string;
+  service_id: string;
+  service_name: string;
+  price: number;
+  date: string;
+  time: string;
+  duration: number;
+  address: string;
+  status: string;
+  employee_name: string | null;
+  employee_email: string | null;
+  calendar_event_id: string | null;
+  notes: string | null;
+  cancel_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmailLogEntry {
+  id: string;
+  gmail_message_id: string | null;
+  thread_id: string | null;
+  direction: string;
+  from_email: string;
+  to_emails: string;
+  subject: string;
+  classification: string | null;
+  client_id: string | null;
+  booking_id: string | null;
+  processed_at: string;
+  action_taken: string | null;
+}
+
+// --- Init tables ---
+let _tablesReady = false;
+async function ensureClientTables() {
+  if (_tablesReady) return;
+  const sql = getDb();
+
+  await sql`CREATE TABLE IF NOT EXISTS clients (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    first_name TEXT,
+    last_name TEXT,
+    phone TEXT,
+    address TEXT,
+    city TEXT,
+    postal_code TEXT,
+    notes TEXT,
+    source TEXT DEFAULT 'email',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`;
+
+  await sql`CREATE TABLE IF NOT EXISTS bookings (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    service_id TEXT NOT NULL,
+    service_name TEXT NOT NULL,
+    price NUMERIC(10,2) NOT NULL,
+    date DATE NOT NULL,
+    time TEXT NOT NULL,
+    duration INTEGER NOT NULL,
+    address TEXT NOT NULL,
+    status TEXT DEFAULT 'confirmed',
+    employee_name TEXT,
+    employee_email TEXT,
+    calendar_event_id TEXT,
+    notes TEXT,
+    cancel_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`;
+
+  await sql`CREATE TABLE IF NOT EXISTS email_log (
+    id TEXT PRIMARY KEY,
+    gmail_message_id TEXT,
+    thread_id TEXT,
+    direction TEXT NOT NULL,
+    from_email TEXT NOT NULL,
+    to_emails TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    classification TEXT,
+    client_id TEXT,
+    booking_id TEXT,
+    processed_at TIMESTAMPTZ DEFAULT NOW(),
+    action_taken TEXT
+  )`;
+
+  _tablesReady = true;
+}
+
+// --- Client Operations ---
+
+function genId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export async function findOrCreateClient(data: {
+  email: string;
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  address?: string;
+  city?: string;
+  postalCode?: string;
+  source?: string;
+}): Promise<{ client: Client; created: boolean; missingFields: string[] }> {
+  await ensureClientTables();
+  const sql = getDb();
+
+  // Try to find existing client by email
+  const existing = await sql`SELECT * FROM clients WHERE LOWER(email) = LOWER(${data.email}) LIMIT 1`;
+
+  if (existing.length > 0) {
+    const client = existing[0] as unknown as Client;
+
+    // Update any new fields we didn't have before
+    const updates: Record<string, string | null> = {};
+    if (data.phone && !client.phone) updates.phone = data.phone;
+    if (data.address && !client.address) updates.address = data.address;
+    if (data.city && !client.city) updates.city = data.city;
+    if (data.postalCode && !client.postal_code) updates.postal_code = data.postalCode;
+    if (data.firstName && !client.first_name) updates.first_name = data.firstName;
+    if (data.lastName && !client.last_name) updates.last_name = data.lastName;
+
+    if (Object.keys(updates).length > 0) {
+      // Update with new info
+      await sql`UPDATE clients SET
+        phone = COALESCE(${updates.phone || null}, phone),
+        address = COALESCE(${updates.address || null}, address),
+        city = COALESCE(${updates.city || null}, city),
+        postal_code = COALESCE(${updates.postal_code || null}, postal_code),
+        first_name = COALESCE(${updates.first_name || null}, first_name),
+        last_name = COALESCE(${updates.last_name || null}, last_name),
+        updated_at = NOW()
+        WHERE id = ${client.id}`;
+    }
+
+    // Check what's still missing
+    const missingFields: string[] = [];
+    if (!client.phone && !data.phone) missingFields.push("phone");
+    if (!client.address && !data.address) missingFields.push("address");
+    if (!client.name && !data.name) missingFields.push("name");
+
+    // Refresh client data
+    const refreshed = await sql`SELECT * FROM clients WHERE id = ${client.id}`;
+    return { client: refreshed[0] as unknown as Client, created: false, missingFields };
+  }
+
+  // Create new client
+  const id = genId("cli");
+  const name = data.name || [data.firstName, data.lastName].filter(Boolean).join(" ") || data.email.split("@")[0];
+
+  await sql`INSERT INTO clients (id, email, name, first_name, last_name, phone, address, city, postal_code, source)
+    VALUES (${id}, ${data.email}, ${name}, ${data.firstName || null}, ${data.lastName || null}, ${data.phone || null}, ${data.address || null}, ${data.city || null}, ${data.postalCode || null}, ${data.source || "email"})`;
+
+  const created = await sql`SELECT * FROM clients WHERE id = ${id}`;
+
+  const missingFields: string[] = [];
+  if (!data.phone) missingFields.push("phone");
+  if (!data.address) missingFields.push("address");
+  if (!data.name && !data.firstName) missingFields.push("name");
+
+  return { client: created[0] as unknown as Client, created: true, missingFields };
+}
+
+export async function updateClient(clientId: string, data: {
+  name?: string;
+  phone?: string;
+  address?: string;
+  city?: string;
+  postalCode?: string;
+  notes?: string;
+}): Promise<Client> {
+  await ensureClientTables();
+  const sql = getDb();
+
+  await sql`UPDATE clients SET
+    name = COALESCE(${data.name || null}, name),
+    phone = COALESCE(${data.phone || null}, phone),
+    address = COALESCE(${data.address || null}, address),
+    city = COALESCE(${data.city || null}, city),
+    postal_code = COALESCE(${data.postalCode || null}, postal_code),
+    notes = COALESCE(${data.notes || null}, notes),
+    updated_at = NOW()
+    WHERE id = ${clientId}`;
+
+  const rows = await sql`SELECT * FROM clients WHERE id = ${clientId}`;
+  return rows[0] as unknown as Client;
+}
+
+export async function getClientByEmail(email: string): Promise<Client | null> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM clients WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
+  return rows.length > 0 ? (rows[0] as unknown as Client) : null;
+}
+
+// --- Booking Operations ---
+
+export async function createBooking(data: {
+  clientId: string;
+  serviceId: string;
+  serviceName: string;
+  price: number;
+  date: string;
+  time: string;
+  duration: number;
+  address: string;
+  employeeName?: string;
+  employeeEmail?: string;
+  calendarEventId?: string;
+  notes?: string;
+}): Promise<Booking> {
+  await ensureClientTables();
+  const sql = getDb();
+  const id = genId("bk");
+
+  await sql`INSERT INTO bookings (id, client_id, service_id, service_name, price, date, time, duration, address, employee_name, employee_email, calendar_event_id, notes)
+    VALUES (${id}, ${data.clientId}, ${data.serviceId}, ${data.serviceName}, ${data.price}, ${data.date}, ${data.time}, ${data.duration}, ${data.address}, ${data.employeeName || null}, ${data.employeeEmail || null}, ${data.calendarEventId || null}, ${data.notes || null})`;
+
+  const rows = await sql`SELECT * FROM bookings WHERE id = ${id}`;
+  return rows[0] as unknown as Booking;
+}
+
+export async function updateBookingStatus(bookingId: string, status: string, cancelReason?: string): Promise<void> {
+  await ensureClientTables();
+  const sql = getDb();
+  await sql`UPDATE bookings SET status = ${status}, cancel_reason = ${cancelReason || null}, updated_at = NOW() WHERE id = ${bookingId}`;
+}
+
+export async function getClientBookings(clientId: string): Promise<Booking[]> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM bookings WHERE client_id = ${clientId} ORDER BY date DESC LIMIT 50`;
+  return rows as unknown as Booking[];
+}
+
+export async function getBookingByCalendarEvent(calendarEventId: string): Promise<Booking | null> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM bookings WHERE calendar_event_id = ${calendarEventId} LIMIT 1`;
+  return rows.length > 0 ? (rows[0] as unknown as Booking) : null;
+}
+
+// --- Email Log ---
+
+export async function logEmail(data: {
+  gmailMessageId?: string;
+  threadId?: string;
+  direction: "inbound" | "outbound";
+  fromEmail: string;
+  toEmails: string;
+  subject: string;
+  classification?: string;
+  clientId?: string;
+  bookingId?: string;
+  actionTaken?: string;
+}): Promise<void> {
+  await ensureClientTables();
+  const sql = getDb();
+  const id = genId("em");
+
+  await sql`INSERT INTO email_log (id, gmail_message_id, thread_id, direction, from_email, to_emails, subject, classification, client_id, booking_id, action_taken)
+    VALUES (${id}, ${data.gmailMessageId || null}, ${data.threadId || null}, ${data.direction}, ${data.fromEmail}, ${data.toEmails}, ${data.subject}, ${data.classification || null}, ${data.clientId || null}, ${data.bookingId || null}, ${data.actionTaken || null})`;
+}
+
+// --- Client History (for AI personalization) ---
+
+export async function getClientHistory(email: string): Promise<{
+  client: Client | null;
+  bookings: Booking[];
+  totalSpent: number;
+  bookingCount: number;
+}> {
+  await ensureClientTables();
+  const sql = getDb();
+
+  const clientRows = await sql`SELECT * FROM clients WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
+  if (clientRows.length === 0) {
+    return { client: null, bookings: [], totalSpent: 0, bookingCount: 0 };
+  }
+
+  const client = clientRows[0] as unknown as Client;
+  const bookings = await sql`SELECT * FROM bookings WHERE client_id = ${client.id} ORDER BY date DESC LIMIT 20`;
+  const stats = await sql`SELECT COUNT(*) as cnt, COALESCE(SUM(price), 0) as total FROM bookings WHERE client_id = ${client.id} AND status != 'cancelled'`;
+
+  return {
+    client,
+    bookings: bookings as unknown as Booking[],
+    totalSpent: Number(stats[0]?.total || 0),
+    bookingCount: Number(stats[0]?.cnt || 0),
+  };
+}
+
+// --- Dashboard Queries ---
+
+export async function getAllClients(): Promise<Client[]> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM clients ORDER BY created_at DESC LIMIT 200`;
+  return rows as unknown as Client[];
+}
+
+export async function getUpcomingBookings(days: number = 7): Promise<(Booking & { client_name: string; client_email: string })[]> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT b.*, c.name as client_name, c.email as client_email
+    FROM bookings b JOIN clients c ON b.client_id = c.id
+    WHERE b.date >= CURRENT_DATE AND b.date <= CURRENT_DATE + ${days}
+    AND b.status = 'confirmed'
+    ORDER BY b.date, b.time`;
+  return rows as any;
+}
