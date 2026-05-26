@@ -136,7 +136,7 @@ Your {{service}} is confirmed for {{date}} at {{time}}.
 
 Address: {{address}}
 Duration: {{duration}}
-Total: ${{price}} CAD
+Total: \${{price}} CAD
 
 Your cleaning team will arrive on time. Please ensure access to the property.
 
@@ -197,7 +197,7 @@ Client: {{clientName}} ({{clientEmail}})
 Service: {{service}}
 Date: {{date}} at {{time}}
 Address: {{address}}
-Price: ${{price}} CAD
+Price: \${{price}} CAD
 
 {{signOff}}`,
     },
