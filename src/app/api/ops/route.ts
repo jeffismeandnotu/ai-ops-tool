@@ -11,20 +11,24 @@ export async function GET(req: NextRequest) {
 
   const view = req.nextUrl.searchParams.get("view") || "summary";
 
-  switch (view) {
-    case "summary":
-      return NextResponse.json({ summary: getOpsLogSummary() });
-    case "operations":
-      return NextResponse.json({ operations: readOpsLog() });
-    case "processed":
-      return NextResponse.json({ processed: readProcessedEmails() });
-    case "all":
-      return NextResponse.json({
-        summary: getOpsLogSummary(),
-        operations: readOpsLog(),
-        processed: readProcessedEmails(),
-      });
-    default:
-      return NextResponse.json({ summary: getOpsLogSummary() });
+  try {
+    switch (view) {
+      case "summary":
+        return NextResponse.json({ summary: await getOpsLogSummary() });
+      case "operations":
+        return NextResponse.json({ operations: await readOpsLog() });
+      case "processed":
+        return NextResponse.json({ processed: await readProcessedEmails() });
+      case "all":
+        return NextResponse.json({
+          summary: await getOpsLogSummary(),
+          operations: await readOpsLog(),
+          processed: await readProcessedEmails(),
+        });
+      default:
+        return NextResponse.json({ summary: await getOpsLogSummary() });
+    }
+  } catch (err: any) {
+    return NextResponse.json({ summary: `Error loading ops log: ${err.message}` });
   }
 }
