@@ -17,8 +17,8 @@ export const BUSINESS = {
 
   // --- People ---
   owner: {
-    name: "Matt",
-    email: "", // fill before demo
+    name: "Micky",
+    email: "aryanraman777@gmail.com",
     phone: "604-902-0399",
     role: "owner" as const,
   },
