@@ -65,14 +65,17 @@ export async function createDraft(
   subject: string,
   body: string,
   cc?: string[],
-  replyToMessageId?: string
+  replyToMessageId?: string,
+  threadId?: string
 ) {
   const gmail = getGmailClient(accessToken);
 
-  const headers = [
+  const headerLines = [
     `To: ${to.join(", ")}`,
     cc?.length ? `Cc: ${cc.join(", ")}` : "",
     `Subject: ${subject}`,
+    replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : "",
+    replyToMessageId ? `References: ${replyToMessageId}` : "",
     "Content-Type: text/plain; charset=utf-8",
     "",
     body,
@@ -80,7 +83,7 @@ export async function createDraft(
     .filter(Boolean)
     .join("\r\n");
 
-  const encodedMessage = Buffer.from(headers)
+  const encodedMessage = Buffer.from(headerLines)
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -91,7 +94,7 @@ export async function createDraft(
     requestBody: {
       message: {
         raw: encodedMessage,
-        threadId: replyToMessageId ? undefined : undefined,
+        threadId: threadId || undefined,
       },
     },
   });
@@ -113,14 +116,18 @@ export async function sendEmail(
   to: string[],
   subject: string,
   body: string,
-  cc?: string[]
+  cc?: string[],
+  replyToMessageId?: string,
+  threadId?: string
 ) {
   const gmail = getGmailClient(accessToken);
 
-  const headers = [
+  const headerLines = [
     `To: ${to.join(", ")}`,
     cc?.length ? `Cc: ${cc.join(", ")}` : "",
     `Subject: ${subject}`,
+    replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : "",
+    replyToMessageId ? `References: ${replyToMessageId}` : "",
     "Content-Type: text/plain; charset=utf-8",
     "",
     body,
@@ -128,7 +135,7 @@ export async function sendEmail(
     .filter(Boolean)
     .join("\r\n");
 
-  const encodedMessage = Buffer.from(headers)
+  const encodedMessage = Buffer.from(headerLines)
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -136,7 +143,10 @@ export async function sendEmail(
 
   const res = await gmail.users.messages.send({
     userId: "me",
-    requestBody: { raw: encodedMessage },
+    requestBody: {
+      raw: encodedMessage,
+      threadId: threadId || undefined,
+    },
   });
 
   return res.data;
@@ -184,6 +194,7 @@ function parseMessage(message: any) {
   return {
     id: message.id,
     threadId: message.threadId,
+    messageId: getHeader("Message-ID") || getHeader("Message-Id"),
     from: getHeader("From"),
     to: getHeader("To"),
     cc: getHeader("Cc"),

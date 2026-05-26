@@ -109,8 +109,20 @@ import {
   getOpsLogSummary,
   readOpsLog,
 } from "@/lib/ops-log";
+import * as fs from "fs";
+import * as path from "path";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+
+// Load rules file
+function loadRules(): string {
+  try {
+    const rulesPath = path.join(process.cwd(), "src", "config", "RULES.md");
+    return fs.readFileSync(rulesPath, "utf-8");
+  } catch {
+    return "Rules file not found — use default business rules from system prompt.";
+  }
+}
 
 // --- Classification Types ---
 export type EmailClassification =
@@ -126,10 +138,15 @@ export type EmailClassification =
 // --- The Automation System Prompt ---
 async function buildAutomationPrompt(): Promise<string> {
   const opsContext = await getOpsLogSummary();
+  const rules = loadRules();
 
   return `You are the AUTONOMOUS operations AI for ${BUSINESS.name}.
 
 YOU ARE NOT CHATTING WITH A HUMAN. You are processing emails automatically.
+
+=== MANDATORY RULES (read before every action) ===
+${rules}
+=== END RULES ===
 
 YOUR PROTOCOL:
 1. Read the ops log context below to know what's already been handled.
@@ -200,7 +217,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "send_email",
-    description: "Send an email immediately.",
+    description: "Send an email immediately. Use threadId and replyToMessageId to reply within an existing thread.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -208,6 +225,8 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         subject: { type: "string" },
         body: { type: "string" },
         cc: { type: "array", items: { type: "string" } },
+        threadId: { type: "string", description: "Gmail thread ID to reply in the same thread" },
+        replyToMessageId: { type: "string", description: "Message-ID header of the email being replied to" },
       },
       required: ["to", "subject", "body"],
     },
@@ -222,6 +241,8 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         subject: { type: "string" },
         body: { type: "string" },
         cc: { type: "array", items: { type: "string" } },
+        threadId: { type: "string", description: "Gmail thread ID to draft in the same thread" },
+        replyToMessageId: { type: "string", description: "Message-ID header of the email being replied to" },
       },
       required: ["to", "subject", "body"],
     },
@@ -383,22 +404,24 @@ async function executeTool(
         return JSON.stringify(thread, null, 2);
       }
       case "send_email": {
-        const sent = await gmail.sendEmail(accessToken, input.to, input.subject, input.body, input.cc);
+        const sent = await gmail.sendEmail(accessToken, input.to, input.subject, input.body, input.cc, input.replyToMessageId, input.threadId);
         await appendOperation({
           type: "email_sent",
           to: input.to,
           subject: input.subject,
+          threadId: input.threadId,
           details: `Sent to ${input.to.join(", ")}: ${input.subject}`,
           verified: true,
         });
-        return JSON.stringify({ success: true, messageId: sent.id });
+        return JSON.stringify({ success: true, messageId: sent.id, threadId: sent.threadId });
       }
       case "draft_email": {
-        const draft = await gmail.createDraft(accessToken, input.to, input.subject, input.body, input.cc);
+        const draft = await gmail.createDraft(accessToken, input.to, input.subject, input.body, input.cc, input.replyToMessageId, input.threadId);
         await appendOperation({
           type: "email_drafted",
           to: input.to,
           subject: input.subject,
+          threadId: input.threadId,
           details: `Draft created for ${input.to.join(", ")}: ${input.subject}`,
           verified: true,
         });
@@ -553,11 +576,14 @@ export async function runAutomationCycle(accessToken: string): Promise<{
           `EMAIL ${i + 1}:
   ID: ${e.id}
   Thread: ${e.threadId}
+  Message-ID: ${(e as any).messageId || "unknown"}
   From: ${e.from}
   To: ${e.to}
   Subject: ${e.subject}
   Date: ${e.date}
-  Body: ${e.body?.slice(0, 1000) || e.snippet}`
+  Body: ${e.body?.slice(0, 1000) || e.snippet}
+
+IMPORTANT: When replying to this email, use threadId="${e.threadId}" and replyToMessageId="${(e as any).messageId || ""}" in your send_email call to keep the conversation in the same thread.`
       )
       .join("\n\n---\n\n");
 

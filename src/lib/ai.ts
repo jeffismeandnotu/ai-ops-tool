@@ -2,6 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { BUSINESS } from "@/config/business";
 import * as gmail from "@/lib/gmail";
 import * as calendar from "@/lib/calendar";
+import * as fs from "fs";
+import * as path from "path";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -75,7 +77,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "send_email",
-    description: "Send an email immediately.",
+    description: "Send an email immediately. Use threadId and replyToMessageId to reply within an existing thread.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -91,6 +93,8 @@ const TOOLS: Anthropic.Tool[] = [
           items: { type: "string" },
           description: "CC email addresses",
         },
+        threadId: { type: "string", description: "Gmail thread ID to reply in the same thread" },
+        replyToMessageId: { type: "string", description: "Message-ID header of the email being replied to" },
       },
       required: ["to", "subject", "body"],
     },
@@ -233,7 +237,9 @@ async function executeTool(
           input.to,
           input.subject,
           input.body,
-          input.cc
+          input.cc,
+          input.replyToMessageId,
+          input.threadId
         );
         return JSON.stringify({
           success: true,
@@ -247,11 +253,14 @@ async function executeTool(
           input.to,
           input.subject,
           input.body,
-          input.cc
+          input.cc,
+          input.replyToMessageId,
+          input.threadId
         );
         return JSON.stringify({
           success: true,
           messageId: sent.id,
+          threadId: sent.threadId,
           message: "Email sent successfully.",
         });
       }
@@ -374,6 +383,13 @@ function buildSystemPrompt(): string {
     /\{\{workingDays\}\}/g,
     BUSINESS.calendar.workingDays.join(", ")
   );
+
+  // Load rules file
+  try {
+    const rulesPath = path.join(process.cwd(), "src", "config", "RULES.md");
+    const rules = fs.readFileSync(rulesPath, "utf-8");
+    prompt += `\n\n=== MANDATORY RULES ===\n${rules}\n=== END RULES ===`;
+  } catch {}
 
   prompt += `\n\nToday's date: ${new Date().toISOString().split("T")[0]}`;
   prompt += `\nTimezone: ${BUSINESS.timezone}`;
