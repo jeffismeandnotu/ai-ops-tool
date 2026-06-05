@@ -99,6 +99,7 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
+import { llm, AI_MODEL, toOpenAITools } from "@/lib/llm";
 import { BUSINESS } from "@/config/business";
 import * as gmail from "@/lib/gmail";
 import * as calendar from "@/lib/calendar";
@@ -973,6 +974,62 @@ async function executeTool(
   }
 }
 
+// --- Shared agent loop (OpenAI-compatible: Gemini / DeepSeek / etc.) ---
+// Runs the read→act→verify tool loop, records usage, appends to `actions`.
+async function runAgentLoop(
+  systemPrompt: string,
+  userMessage: string,
+  accessToken: string,
+  actions: string[],
+  context: string
+): Promise<void> {
+  const ctx = { repliedTo: new Set<string>() };
+  const tools = toOpenAITools(AUTOMATION_TOOLS as any);
+  const messages: any[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userMessage },
+  ];
+  let calls = 0, inTok = 0, outTok = 0;
+
+  try {
+    for (let i = 0; i < 40; i++) {
+      const resp = await llm.chat.completions.create({
+        model: AI_MODEL,
+        temperature: 0,
+        max_tokens: 4096,
+        messages,
+        tools,
+        tool_choice: "auto",
+      });
+      calls++;
+      inTok += resp.usage?.prompt_tokens || 0;
+      outTok += resp.usage?.completion_tokens || 0;
+
+      const msg = resp.choices[0]?.message;
+      if (!msg) break;
+      if (msg.content) actions.push(msg.content);
+
+      const toolCalls = msg.tool_calls || [];
+      if (toolCalls.length === 0) break;
+
+      messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls });
+
+      for (const tc of toolCalls) {
+        const fn = (tc as any).function;
+        let args: any = {};
+        try { args = JSON.parse(fn.arguments || "{}"); } catch { args = {}; }
+        const result = await executeTool(fn.name, args, accessToken, ctx);
+        messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+        actions.push(`Tool: ${fn.name}(${JSON.stringify(args).slice(0, 100)})`);
+      }
+
+      messages.push({ role: "user", content: RULE_CHECK });
+    }
+  } finally {
+    await recordUsage({ model: AI_MODEL, context, calls, inputTokens: inTok, outputTokens: outTok });
+  }
+}
+
 // --- Main Automation Cycle ---
 export async function runAutomationCycle(accessToken: string): Promise<{
   processed: number;
@@ -1032,61 +1089,10 @@ EMAILS TO PROCESS:
 
 ${emailSummaries}`;
 
-    // Run the AI with tool loop
+    // Run the AI with the tool loop
     const systemPrompt = await buildAutomationPrompt();
-    let currentMessages: Anthropic.MessageParam[] = [
-      { role: "user", content: userMessage },
-    ];
+    await runAgentLoop(systemPrompt, userMessage, accessToken, actions, "automation_cycle");
 
-    let _calls = 0, _usageIn = 0, _usageOut = 0;
-
-    const ctx = { repliedTo: new Set<string>() };
-
-    for (let i = 0; i < 40; i++) {
-      const response = await client.messages.create({
-        model: BUSINESS.ai.model,
-        max_tokens: 4096,
-        temperature: 0,
-        system: systemPrompt,
-        tools: AUTOMATION_TOOLS,
-        messages: currentMessages,
-      });
-
-      _calls++; _usageIn += (response as any).usage?.input_tokens || 0; _usageOut += (response as any).usage?.output_tokens || 0;
-
-      const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
-      const textBlocks = response.content
-        .filter((b) => b.type === "text")
-        .map((b) => (b as any).text);
-
-      if (textBlocks.length > 0) {
-        actions.push(...textBlocks);
-      }
-
-      if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") {
-        break;
-      }
-
-      currentMessages.push({ role: "assistant", content: response.content });
-
-      const toolResults: any[] = [];
-      for (const tool of toolUseBlocks) {
-        const t = tool as any;
-        const result = await executeTool(t.name, t.input, accessToken, ctx);
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: t.id,
-          content: result,
-        });
-        actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
-      }
-
-      toolResults.push({ type: "text", text: RULE_CHECK });
-
-      currentMessages.push({ role: "user", content: toolResults });
-    }
-
-    await recordUsage({ model: BUSINESS.ai.model, context: "automation_cycle", calls: _calls, inputTokens: _usageIn, outputTokens: _usageOut });
     appendOperation({
       type: "email_received",
       details: `Automation cycle complete. Processed ${unprocessed.length} emails.`,
@@ -1163,45 +1169,9 @@ EMAILS TO PROCESS:
 ${emailSummaries}`;
 
   const systemPrompt = await buildAutomationPrompt();
-  let currentMessages: Anthropic.MessageParam[] = [
-    { role: "user", content: userMessage },
-  ];
 
   try {
-    let _calls = 0, _usageIn = 0, _usageOut = 0;
-    const ctx = { repliedTo: new Set<string>() };
-    for (let i = 0; i < 40; i++) {
-      const response = await client.messages.create({
-        model: BUSINESS.ai.model,
-        max_tokens: 4096,
-        temperature: 0,
-        system: systemPrompt,
-        tools: AUTOMATION_TOOLS,
-        messages: currentMessages,
-      });
-
-      _calls++; _usageIn += (response as any).usage?.input_tokens || 0; _usageOut += (response as any).usage?.output_tokens || 0;
-
-      const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
-      const textBlocks = response.content
-        .filter((b) => b.type === "text")
-        .map((b) => (b as any).text);
-      if (textBlocks.length > 0) actions.push(...textBlocks);
-
-      if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") break;
-
-      currentMessages.push({ role: "assistant", content: response.content });
-      const toolResults: any[] = [];
-      for (const tool of toolUseBlocks) {
-        const t = tool as any;
-        const result = await executeTool(t.name, t.input, accessToken, ctx);
-        toolResults.push({ type: "tool_result", tool_use_id: t.id, content: result });
-        actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
-      }
-      toolResults.push({ type: "text", text: RULE_CHECK });
-      currentMessages.push({ role: "user", content: toolResults });
-    }
-    await recordUsage({ model: BUSINESS.ai.model, context: "webhook_messages", calls: _calls, inputTokens: _usageIn, outputTokens: _usageOut });
+    await runAgentLoop(systemPrompt, userMessage, accessToken, actions, "webhook_messages");
   } catch (err: any) {
     errors.push(err.message || String(err));
   }
