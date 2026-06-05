@@ -210,9 +210,9 @@ PHASE 2 — VALIDATE & CONFIRM:
 Goal: the customer is replying to your quote. Determine what they said and take ONE of these actions:
 
 ACTION A — Customer NAMES A SPECIFIC DATE+TIME (e.g. "Tuesday at 10", "June 10 2 PM", "the 10:30 slot"):
-  1. Call check_slot(date, serviceId, time) to validate THAT ONE slot.
-     - Do NOT call get_availability or get_upcoming_availability.
-     - Do NOT send the availability template.
+  1. Call check_slot(date, serviceId, time) — the ONLY correct tool for validating a single time.
+     - NEVER call get_availability here. get_availability is for LISTING slots, not validating.
+     - Do NOT call get_upcoming_availability. Do NOT send the availability template.
   2. If free=true: check required fields (name, email, service, date, time, address).
      - All present → mark_phase_complete(2), go immediately to Phase 3.
      - Missing fields → send "missing_info" for only what's missing. STOP.
@@ -811,8 +811,8 @@ async function executeTool(
         }
         const guide: Record<string, string> = {
           general_inquiry: "Answer their question helpfully using get_service/get_availability, then invite them to book (Phase 1).",
-          booking_request: "Booking flow — call get_phase(threadId) and follow its guidance exactly.",
-          booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Follow the PHASE 2 ACTION A guidance: validate with check_slot(date, serviceId, time), then if free=true check fields and book.",
+          booking_request: "Booking flow — call get_phase(threadId) and follow its guidance exactly. If the customer names a specific time, validate it with check_slot (NOT get_availability).",
+          booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Validate with check_slot(date, serviceId, time). Do NOT use get_availability here. If free=true check fields and book.",
           missing_info: "Send compose_and_send template 'missing_info' for the unknown field; stay in the current phase.",
           reschedule: "get_client_history → reschedule_booking; send template 'reschedule'. Reschedules are free.",
           cancellation: "get_client_history → cancel_booking. Let the tool decide the 24h policy; never decide it yourself.",
