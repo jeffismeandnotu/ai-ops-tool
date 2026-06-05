@@ -1007,9 +1007,11 @@ async function runAgentLoop(
           break;
         } catch (e: any) {
           const status = e?.status || e?.response?.status;
-          if (status === 429 && attempt < 5) {
-            // Free-tier rate limit (e.g. Gemini 15 RPM) — wait for the window to reset and retry.
-            await new Promise((r) => setTimeout(r, 6000 * (attempt + 1)));
+          const blob = `${e?.message || ""} ${JSON.stringify(e?.error || e?.response?.data || "")}`;
+          const billing = /prepay|billing|credit|depleted|quota.*exceeded|RESOURCE_EXHAUSTED/i.test(blob);
+          // Billing/credit exhaustion won't fix itself — fail fast. Only back off on transient rate limits.
+          if (status === 429 && !billing && attempt < 3) {
+            await new Promise((r) => setTimeout(r, 5000 * (attempt + 1)));
             continue;
           }
           throw e;
