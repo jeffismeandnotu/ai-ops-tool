@@ -72,11 +72,11 @@ POST /api/gmail/webhook?secret=<GMAIL_WEBHOOK_SECRET>
 - Self-renews the Gmail watch when within 24h of expiry
 
 ### Order of Operations (per inbound email)
-1. Load client profile (golden record) → inject as `WHAT WE ALREADY KNOW` block
+1. Load client profile → inject `<customer_profile>` block (CONFIRMED/UNKNOWN)
 2. Classify email (`classify_email`)
-3. Save any new profile details from email body (`save_client_info`)
-4. Determine truly-missing fields from merged view
-5. Confirm known values (especially address) rather than silently reusing
+3. `find_or_create_client` with all extracted details → merges into DB, returns full profile
+4. Only ask for UNKNOWN fields required for the current operation
+5. Confirm CONFIRMED address before booking ("I have your address as X — still correct?")
 6. Send exactly one customer reply → `mark_email_done`
 
 ### 2. Cron Polling (fallback)
@@ -97,7 +97,7 @@ The core ~2000-line module that orchestrates everything:
 - Business config, services, pricing, working hours
 - 3-phase booking protocol
 - Hard rules (one reply per inbound, template-only outbound, facts from tools)
-- Golden record rules: never re-ask known fields, confirm address before booking, persist new details via `save_client_info`
+- Profile rules: never re-ask CONFIRMED fields, confirm address before booking
 - Escalation routing
 - Anti-injection awareness (untrusted data delimiters)
 
@@ -108,12 +108,13 @@ The core ~2000-line module that orchestrates everything:
 - RULE_CHECK injected after every tool result
 - Token/cost tracking via `ai_usage` table
 
-### Client Profile Injection
-Every inbound email triggers a pre-flight profile load:
-1. Resolve sender email → `findOrCreateClient` (create on first contact)
-2. `getClientProfile()` returns consolidated golden record: client fields + open inquiry + latest quote + active booking phase + recent bookings
-3. Injected as `<trusted-internal-data>` block ("WHAT WE ALREADY KNOW ABOUT THIS CUSTOMER") — distinct from `<untrusted-email>` body
-4. Agent reads the block before reasoning; only asks for genuinely missing fields
+### Client Profile (Golden Record)
+Every inbound email triggers a pre-flight profile load via `buildProfileBlock()`:
+1. Resolve sender → `findOrCreateClient` (create on first contact)
+2. `getClientProfile()` returns full record: client fields + open inquiry + latest quote + active booking phase + recent bookings
+3. Injected as `<customer_profile>` block with explicit CONFIRMED/UNKNOWN labels
+4. `find_or_create_client` tool also merges new details and returns the full profile — agent sees known fields both in context AND tool results
+5. Fields marked CONFIRMED are never re-asked; UNKNOWN fields may be asked if required for the operation
 
 ### Tool Executor (`executeTool`)
 30+ tools with deterministic code guards:
