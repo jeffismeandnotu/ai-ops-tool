@@ -74,7 +74,14 @@ export async function POST(req: NextRequest) {
     }
 
     // 1. Inject a realistic inbound email into the ops inbox.
-    const inserted = await gmail.insertInbound(accessToken, { from, to: ops, subject, body: text });
+    const inserted = await gmail.insertInbound(accessToken, {
+      from,
+      to: ops,
+      subject,
+      body: text,
+      threadId: body.threadId,
+      inReplyTo: body.inReplyTo,
+    });
 
     // 2. Run the real agent on it.
     const result = await runAutomationForMessages(accessToken, [inserted.id!]);
@@ -84,7 +91,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      injected: { id: inserted.id, from, subject },
+      injected: { id: inserted.id, threadId: inserted.threadId, from, subject },
       agent: { processed: result.processed, errors: result.errors, actions: result.actions },
       replies: sent.map((s) => ({ to: s.to, subject: s.subject, body: s.body })),
     });

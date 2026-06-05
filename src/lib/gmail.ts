@@ -278,23 +278,28 @@ function parseMessage(message: any) {
 // --- Test helpers (inject a realistic inbound + read the latest sent reply) ---
 export async function insertInbound(
   accessToken: string,
-  opts: { from: string; to: string; subject: string; body: string }
+  opts: { from: string; to: string; subject: string; body: string; threadId?: string; inReplyTo?: string }
 ) {
   const gmail = getGmailClient(accessToken);
-  const headers = [
+  const messageId = `<test-${Date.now()}@gmail.com>`;
+  const headerLines = [
     `From: ${opts.from}`,
     `To: ${opts.to}`,
     `Subject: ${encodeSubject(opts.subject)}`,
     `Date: ${new Date().toUTCString()}`,
-    `Message-ID: <test-${Date.now()}@gmail.com>`,
+    `Message-ID: ${messageId}`,
+    opts.inReplyTo ? `In-Reply-To: ${opts.inReplyTo}` : "",
+    opts.inReplyTo ? `References: ${opts.inReplyTo}` : "",
     "Content-Type: text/plain; charset=utf-8",
     "",
     opts.body,
-  ].join("\r\n");
-  const raw = Buffer.from(headers).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  ].filter(Boolean).join("\r\n");
+  const raw = Buffer.from(headerLines).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const requestBody: any = { raw, labelIds: ["INBOX", "UNREAD"] };
+  if (opts.threadId) requestBody.threadId = opts.threadId;
   const res = await gmail.users.messages.insert({
     userId: "me",
-    requestBody: { raw, labelIds: ["INBOX", "UNREAD"] },
+    requestBody,
   });
   return res.data; // { id, threadId }
 }
