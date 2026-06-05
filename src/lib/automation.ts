@@ -118,7 +118,7 @@ import { getPhase, setPhase } from "@/lib/booking-phases";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
-import { validateOutboundFacts, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
+import { validateOutboundFacts, servicesListEmail, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
 import { recordClassification, scanRisk } from "@/lib/triage";
 import * as waitlist from "@/lib/waitlist";
 import * as fs from "fs";
@@ -186,7 +186,8 @@ Before anything else, call classify_email(threadId, intent, confidence, risk) an
 Every booking conversation moves through phase 1 -> 2 -> 3. A phase must be marked complete before the next begins. ALWAYS call get_phase(threadId) FIRST and do only the current phase's work.
 
 PHASE 1 — TALK:
-Be helpful and informative. Work out which service they want (get_service / list_services for the price, get_availability for real free times) and answer their questions. Then ask if they'd like to go ahead: send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Pull get_availability immediately before quoting and pass its exact slot labels verbatim — the send is blocked if any offered time isn't actually free. If the day they want has NO free slots, offer the waitlist (add_to_waitlist) instead of inventing a time. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
+Be helpful and informative. If the customer has NOT specified a service (e.g. they just asked for a quote or general info), send compose_and_send template "services_list" — it lists all services with prices and asks what they need. Mark phase 1 complete and STOP. When they reply with a preference, you are still in phase 1: identify the service, get_availability for real free times, and send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Pull get_availability immediately before quoting and pass its exact slot labels verbatim — the send is blocked if any offered time isn't actually free. If the day they want has NO free slots, offer the waitlist (add_to_waitlist) instead of inventing a time. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
+If the customer's first email already clearly names a specific service AND a date/preference, skip the services list and go straight to the quote.
 
 PHASE 2 — CONFIRM (only once the client replies accepting a time):
 Read their confirmation. Call get_required_booking_fields and check you have every one: client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3.
@@ -371,13 +372,13 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   {
     name: "compose_and_send",
     description:
-      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Use this for quotes, booking confirmations, missing-info requests, reschedules, and cancellations. (Plain send_email is for internal/owner notes only.)",
+      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (all services overview — use when the customer hasn't specified a service), quote (specific service with times), booking_confirmation, missing_info, reschedule, cancellation, cancellation_fee_notice. (Plain send_email is for internal/owner notes only.)",
     input_schema: {
       type: "object" as const,
       properties: {
         template: {
           type: "string",
-          enum: ["quote", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice"],
+          enum: ["services_list", "quote", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice"],
         },
         to: { type: "array", items: { type: "string" } },
         cc: { type: "array", items: { type: "string" } },
@@ -885,7 +886,10 @@ async function executeTool(
         let built: { subject: string; body: string };
         let allowedPrices: number[] = [];
 
-        if (t === "quote") {
+        if (t === "services_list") {
+          built = servicesListEmail({ firstName: input.firstName });
+          allowedPrices = catalog.listServices().map((s) => s.price);
+        } else if (t === "quote") {
           const svc = catalog.getService(input.serviceId);
           if (!svc) return JSON.stringify({ success: false, error: `Unknown service_id '${input.serviceId}'` });
           // Every offered time MUST be verified free against the source of truth.
