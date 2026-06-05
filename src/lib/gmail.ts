@@ -78,18 +78,15 @@ export async function createDraft(
 ) {
   const gmail = getGmailClient(accessToken);
 
-  const headerLines = [
-    `To: ${to.join(", ")}`,
-    cc?.length ? `Cc: ${cc.join(", ")}` : "",
-    `Subject: ${encodeSubject(subject)}`,
-    replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : "",
-    replyToMessageId ? `References: ${replyToMessageId}` : "",
-    "Content-Type: text/plain; charset=utf-8",
-    "",
-    body,
-  ]
-    .filter(Boolean)
-    .join("\r\n");
+  const hdrs = [`To: ${to.join(", ")}`];
+  if (cc?.length) hdrs.push(`Cc: ${cc.join(", ")}`);
+  hdrs.push(`Subject: ${encodeSubject(subject)}`);
+  if (replyToMessageId) {
+    hdrs.push(`In-Reply-To: ${replyToMessageId}`);
+    hdrs.push(`References: ${replyToMessageId}`);
+  }
+  hdrs.push("Content-Type: text/plain; charset=utf-8");
+  const headerLines = hdrs.join("\r\n") + "\r\n\r\n" + body;
 
   const encodedMessage = Buffer.from(headerLines)
     .toString("base64")
@@ -130,18 +127,15 @@ export async function sendEmail(
 ) {
   const gmail = getGmailClient(accessToken);
 
-  const headerLines = [
-    `To: ${to.join(", ")}`,
-    cc?.length ? `Cc: ${cc.join(", ")}` : "",
-    `Subject: ${encodeSubject(subject)}`,
-    replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : "",
-    replyToMessageId ? `References: ${replyToMessageId}` : "",
-    "Content-Type: text/plain; charset=utf-8",
-    "",
-    body,
-  ]
-    .filter(Boolean)
-    .join("\r\n");
+  const hdrs = [`To: ${to.join(", ")}`];
+  if (cc?.length) hdrs.push(`Cc: ${cc.join(", ")}`);
+  hdrs.push(`Subject: ${encodeSubject(subject)}`);
+  if (replyToMessageId) {
+    hdrs.push(`In-Reply-To: ${replyToMessageId}`);
+    hdrs.push(`References: ${replyToMessageId}`);
+  }
+  hdrs.push("Content-Type: text/plain; charset=utf-8");
+  const headerLines = hdrs.join("\r\n") + "\r\n\r\n" + body;
 
   const encodedMessage = Buffer.from(headerLines)
     .toString("base64")
@@ -282,18 +276,19 @@ export async function insertInbound(
 ) {
   const gmail = getGmailClient(accessToken);
   const messageId = `<test-${Date.now()}@gmail.com>`;
-  const headerLines = [
+  const headers = [
     `From: ${opts.from}`,
     `To: ${opts.to}`,
     `Subject: ${encodeSubject(opts.subject)}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: ${messageId}`,
-    opts.inReplyTo ? `In-Reply-To: ${opts.inReplyTo}` : "",
-    opts.inReplyTo ? `References: ${opts.inReplyTo}` : "",
-    "Content-Type: text/plain; charset=utf-8",
-    "",
-    opts.body,
-  ].filter(Boolean).join("\r\n");
+  ];
+  if (opts.inReplyTo) {
+    headers.push(`In-Reply-To: ${opts.inReplyTo}`);
+    headers.push(`References: ${opts.inReplyTo}`);
+  }
+  headers.push("Content-Type: text/plain; charset=utf-8");
+  const headerLines = headers.join("\r\n") + "\r\n\r\n" + opts.body;
   const raw = Buffer.from(headerLines).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const requestBody: any = { raw, labelIds: ["INBOX", "UNREAD"] };
   if (opts.threadId) requestBody.threadId = opts.threadId;
