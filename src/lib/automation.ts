@@ -131,7 +131,7 @@ function loadRules(): string {
 
 // Injected after every tool result to force the read -> act -> verify cycle.
 const RULE_CHECK =
-  "RULE CHECK — before your next action: re-read the MANDATORY RULES (call read_rules if you need the full text) and confirm the result above complies with every rule (correct price from the catalog, slot from get_availability, all required fields present, no discounts/negotiation outside the contract feature, complaints escalated, customer emails sent only via compose_and_send). If anything violated a rule, fix it now before doing anything else. Take ONE action at a time.";
+  "RULE CHECK — before your next action: re-read the MANDATORY RULES (call read_rules if you need the full text) and confirm the result above complies with every rule (correct price from the catalog, slot from get_availability, all required fields present, no discounts/negotiation outside the contract feature, complaints escalated, customer emails sent only via compose_and_send). If anything violated a rule, fix it now before doing anything else. Take ONE action at a time. IMPORTANT STOP CONDITION: send AT MOST ONE customer-facing email per inbound message — a booking gets exactly one booking_confirmation (never also a quote); an inquiry gets exactly one quote. If you have ALREADY sent the customer their reply, do NOT send another email — your only remaining steps are recording (create_inquiry/create_quote) and mark_email_done, then STOP.";
 
 // --- Classification Types ---
 export type EmailClassification =
@@ -174,6 +174,8 @@ Operate strictly like this, repeating for every action:
 3. VERIFY: after the result comes back, confirm it complied with the rules. If it violated any rule, correct it before doing anything else.
 4. Repeat from step 1 for the next action.
 Never batch multiple changing actions without re-reading and verifying between them. After every tool result you will be reminded to do this — actually do it.
+
+ONE CUSTOMER REPLY PER EMAIL: Each inbound message gets exactly one customer-facing email. A booking request you can fulfil → ONE booking_confirmation (do NOT also send a quote). An inquiry → ONE quote. Missing info → ONE missing_info. After that reply is sent, record it and call mark_email_done — do not send anything else to the customer for this message.
 
 === DETERMINISM PROTOCOL (NON-NEGOTIABLE — these facts are owned by tools, not by you) ===
 You must NEVER state a price, duration, or time slot from your own judgement. Every such fact comes from a tool result.

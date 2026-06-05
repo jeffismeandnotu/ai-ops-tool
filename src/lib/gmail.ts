@@ -291,11 +291,14 @@ export async function insertInbound(
   return res.data; // { id, threadId }
 }
 
-export async function getLatestSent(accessToken: string) {
+export async function getRecentSent(accessToken: string, n = 4) {
   const gmail = getGmailClient(accessToken);
-  const list = await gmail.users.messages.list({ userId: "me", q: "in:sent", maxResults: 1 });
-  const id = list.data.messages?.[0]?.id;
-  if (!id) return null;
-  const full = await gmail.users.messages.get({ userId: "me", id, format: "full" });
-  return parseMessage(full.data);
+  const list = await gmail.users.messages.list({ userId: "me", q: "in:sent", maxResults: n });
+  const msgs = list.data.messages || [];
+  const out = [];
+  for (const m of msgs) {
+    const full = await gmail.users.messages.get({ userId: "me", id: m.id!, format: "full" });
+    out.push(parseMessage(full.data));
+  }
+  return out;
 }

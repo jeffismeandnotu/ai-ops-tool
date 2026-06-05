@@ -36,14 +36,14 @@ export async function POST(req: NextRequest) {
     // 2. Run the real agent on it.
     const result = await runAutomationForMessages(accessToken, [inserted.id!]);
 
-    // 3. Read back the actual reply that was sent.
-    const sent = await gmail.getLatestSent(accessToken);
+    // 3. Read back the actual reply(ies) that were sent.
+    const sent = await gmail.getRecentSent(accessToken, 4);
 
     return NextResponse.json({
       ok: true,
       injected: { id: inserted.id, from, subject },
       agent: { processed: result.processed, errors: result.errors },
-      reply: sent ? { to: sent.to, subject: sent.subject, body: sent.body } : null,
+      replies: sent.map((s) => ({ to: s.to, subject: s.subject, body: s.body })),
     });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || String(err) }, { status: 500 });
