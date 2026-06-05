@@ -6,6 +6,14 @@ export function getGmailClient(accessToken: string) {
   return google.gmail({ version: "v1", auth });
 }
 
+// RFC 2047-encode a subject if it contains non-ASCII (e.g. em-dash), so mail
+// clients render it correctly instead of mojibake.
+function encodeSubject(s: string): string {
+  return /[^\x00-\x7F]/.test(s)
+    ? `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`
+    : s;
+}
+
 // --- Read ---
 export async function searchEmails(
   accessToken: string,
@@ -73,7 +81,7 @@ export async function createDraft(
   const headerLines = [
     `To: ${to.join(", ")}`,
     cc?.length ? `Cc: ${cc.join(", ")}` : "",
-    `Subject: ${subject}`,
+    `Subject: ${encodeSubject(subject)}`,
     replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : "",
     replyToMessageId ? `References: ${replyToMessageId}` : "",
     "Content-Type: text/plain; charset=utf-8",
@@ -125,7 +133,7 @@ export async function sendEmail(
   const headerLines = [
     `To: ${to.join(", ")}`,
     cc?.length ? `Cc: ${cc.join(", ")}` : "",
-    `Subject: ${subject}`,
+    `Subject: ${encodeSubject(subject)}`,
     replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : "",
     replyToMessageId ? `References: ${replyToMessageId}` : "",
     "Content-Type: text/plain; charset=utf-8",
@@ -276,7 +284,7 @@ export async function insertInbound(
   const headers = [
     `From: ${opts.from}`,
     `To: ${opts.to}`,
-    `Subject: ${opts.subject}`,
+    `Subject: ${encodeSubject(opts.subject)}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <test-${Date.now()}@gmail.com>`,
     "Content-Type: text/plain; charset=utf-8",
