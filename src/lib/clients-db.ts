@@ -151,6 +151,8 @@ async function ensureClientTables() {
     status TEXT NOT NULL DEFAULT 'sent',
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`;
+  await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS source_message_id TEXT`;
+  await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_email TEXT`;
 
   _tablesReady = true;
 }
@@ -433,13 +435,35 @@ export async function createQuote(data: {
   price: number;
   currency?: string;
   validUntil?: string;
+  sourceMessageId?: string;
+  customerEmail?: string;
 }): Promise<{ id: string }> {
   await ensureClientTables();
   const sql = getDb();
   const id = genId("qt");
-  await sql`INSERT INTO quotes (id, inquiry_id, client_id, service_id, service_name, price, currency, valid_until, status)
-    VALUES (${id}, ${data.inquiryId || null}, ${data.clientId || null}, ${data.serviceId}, ${data.serviceName}, ${data.price}, ${data.currency || "CAD"}, ${data.validUntil || null}, 'sent')`;
+  await sql`INSERT INTO quotes (id, inquiry_id, client_id, service_id, service_name, price, currency, valid_until, status, source_message_id, customer_email)
+    VALUES (${id}, ${data.inquiryId || null}, ${data.clientId || null}, ${data.serviceId}, ${data.serviceName}, ${data.price}, ${data.currency || "CAD"}, ${data.validUntil || null}, 'sent', ${data.sourceMessageId || null}, ${data.customerEmail || null})`;
   return { id };
+}
+
+// Has this client been sent a proposal/quote in a DIFFERENT inbound message?
+// Matches by clientId OR customer email. Used to enforce: never book until the
+// client confirms a prior proposal.
+export async function hasPriorProposal(
+  opts: { clientId?: string; email?: string },
+  excludeMessageId?: string
+): Promise<boolean> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT 1 FROM quotes
+    WHERE source_message_id IS NOT NULL
+    AND source_message_id <> ${excludeMessageId || ""}
+    AND (
+      (${opts.clientId || ""} <> '' AND client_id = ${opts.clientId || ""})
+      OR (${opts.email || ""} <> '' AND LOWER(customer_email) = LOWER(${opts.email || ""}))
+    )
+    LIMIT 1`;
+  return rows.length > 0;
 }
 
 // Bookings on a date (DB source of truth for "taken").

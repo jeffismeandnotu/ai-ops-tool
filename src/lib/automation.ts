@@ -637,7 +637,7 @@ async function executeTool(
   toolName: string,
   input: any,
   accessToken: string,
-  ctx: { repliedTo: Set<string> } = { repliedTo: new Set() }
+  ctx: { repliedTo: Set<string>; messageId?: string } = { repliedTo: new Set() }
 ): Promise<string> {
   const ownerEmail = BUSINESS.owner.email.toLowerCase();
   const employeeEmails = new Set(BUSINESS.employees.map((e) => (e.email || "").toLowerCase()).filter(Boolean));
@@ -686,6 +686,7 @@ async function executeTool(
           serviceId: svc.id,
           serviceName: svc.name,
           price: svc.price,
+          sourceMessageId: ctx.messageId,
         });
         return JSON.stringify({ success: true, quoteId: q.id, price: svc.price });
       }
@@ -763,6 +764,24 @@ async function executeTool(
         }
         const sent = await gmail.sendEmail(accessToken, input.to, built.subject, built.body, input.cc, input.replyToMessageId, input.threadId);
         ccust.forEach((a: string) => ctx.repliedTo.add(a.toLowerCase()));
+        // Auto-record the proposal so a later confirmation reply can be booked
+        // (the booking gate requires a prior proposal). Reliable — not dependent
+        // on the model separately calling create_quote.
+        if (t === "quote") {
+          const svcQ = catalog.getService(input.serviceId);
+          if (svcQ) {
+            try {
+              await clientsDb.createQuote({
+                clientId: input.clientId,
+                serviceId: svcQ.id,
+                serviceName: svcQ.name,
+                price: svcQ.price,
+                sourceMessageId: ctx.messageId,
+                customerEmail: (input.to || [])[0],
+              });
+            } catch {}
+          }
+        }
         await appendOperation({
           type: "email_sent",
           to: input.to,
@@ -849,6 +868,19 @@ async function executeTool(
             success: false,
             blocked: true,
             reason: "Not yet confirmed by the client. Do NOT book yet. Complete STAGE 2 first: send the client the proposed details (service, price, specific time) and wait for them to explicitly confirm. Only call create_booking once they have accepted, passing clientConfirmed:true and their words as confirmationEvidence.",
+          });
+        }
+        // Hard rail: a booking requires a proposal already sent to this client in a
+        // PRIOR inbound message (i.e. this message is their confirmation reply).
+        // This makes booking-on-first-contact impossible regardless of what the model claims.
+        const priorProposal = (input.clientId || input.clientEmail)
+          ? await clientsDb.hasPriorProposal({ clientId: input.clientId, email: input.clientEmail }, ctx.messageId)
+          : false;
+        if (!priorProposal) {
+          return JSON.stringify({
+            success: false,
+            blocked: true,
+            reason: "No prior proposal on record for this client. You cannot book on first contact. STAGE 2 first: send a quote with the price and specific available times and ask the client to confirm. Book only after they reply confirming a time.",
           });
         }
         const r = await bookingService.createBookingGuarded(accessToken, {
@@ -1015,9 +1047,10 @@ async function runAnthropicLoop(
   userMessage: string,
   accessToken: string,
   actions: string[],
-  context: string
+  context: string,
+  primaryMessageId?: string
 ): Promise<void> {
-  const ctx = { repliedTo: new Set<string>() };
+  const ctx = { repliedTo: new Set<string>(), messageId: primaryMessageId };
   const tools = AUTOMATION_TOOLS.map((t, idx) =>
     idx === AUTOMATION_TOOLS.length - 1 ? ({ ...t, cache_control: { type: "ephemeral" } } as any) : t
   );
@@ -1093,12 +1126,13 @@ async function runAgentLoop(
   userMessage: string,
   accessToken: string,
   actions: string[],
-  context: string
+  context: string,
+  primaryMessageId?: string
 ): Promise<void> {
   if ((process.env.AI_PROVIDER || "").toLowerCase() === "anthropic") {
-    return runAnthropicLoop(systemPrompt, userMessage, accessToken, actions, context);
+    return runAnthropicLoop(systemPrompt, userMessage, accessToken, actions, context, primaryMessageId);
   }
-  const ctx = { repliedTo: new Set<string>() };
+  const ctx = { repliedTo: new Set<string>(), messageId: primaryMessageId };
   const tools = toOpenAITools(AUTOMATION_TOOLS as any);
   const messages: any[] = [
     { role: "system", content: systemPrompt },
@@ -1221,7 +1255,7 @@ ${emailSummaries}`;
 
     // Run the AI with the tool loop
     const systemPrompt = await buildAutomationPrompt();
-    await runAgentLoop(systemPrompt, userMessage, accessToken, actions, "automation_cycle");
+    await runAgentLoop(systemPrompt, userMessage, accessToken, actions, "automation_cycle", unprocessed[0]?.id);
 
     appendOperation({
       type: "email_received",
@@ -1302,7 +1336,7 @@ ${emailSummaries}`;
   const systemPrompt = await buildAutomationPrompt();
 
   try {
-    await runAgentLoop(systemPrompt, userMessage, accessToken, actions, "webhook_messages");
+    await runAgentLoop(systemPrompt, userMessage, accessToken, actions, "webhook_messages", unprocessed[0]?.id);
   } catch (err: any) {
     errors.push(err.message || String(err));
   }
