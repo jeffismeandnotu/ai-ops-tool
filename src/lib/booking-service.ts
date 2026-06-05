@@ -5,6 +5,22 @@ import { isSlotFree, getAvailability } from "@/lib/availability";
 import { createBooking } from "@/lib/clients-db";
 import * as calendar from "@/lib/calendar";
 
+// Convert a wall-clock date+time in a named IANA timezone to a UTC epoch (ms),
+// DST-correct. e.g. ("2026-06-05","08:00","America/Vancouver") -> the ms for 15:00Z.
+function zonedWallClockToUtcMs(dateStr: string, timeStr: string, tz: string): number {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const [h, mi] = timeStr.split(":").map(Number);
+  const guess = Date.UTC(y, (mo || 1) - 1, d || 1, h || 0, mi || 0, 0);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(guess)).reduce((a: any, p) => ((a[p.type] = p.value), a), {});
+  const tzWallAsUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  const offset = tzWallAsUtc - guess;
+  return guess - offset;
+}
+
 // ============================================================
 // BOOKING SERVICE — the only path that writes a booking
 // ============================================================
@@ -178,7 +194,7 @@ export async function cancelGuarded(
   // cancel — a fee applies and the owner handles it.
   const apptDate = String(b.date).slice(0, 10);
   const apptTime = String(b.time).slice(0, 5);
-  const appt = new Date(`${apptDate}T${apptTime}:00`);
+  const appt = new Date(zonedWallClockToUtcMs(apptDate, apptTime, BUSINESS.timezone));
   const hoursUntil = (appt.getTime() - Date.now()) / 3_600_000;
   const noticeHours = BUSINESS.cancellation?.noticeHours ?? 24;
   if (hoursUntil < noticeHours) {
