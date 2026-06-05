@@ -176,28 +176,67 @@ Before anything else, call classify_email(threadId, intent, confidence, risk) an
 - MULTIPLE INTENTS in one email: handle the highest-priority one — escalation beats everything; otherwise cancellation/reschedule before new bookings. Cover it in your single reply; escalate the rest via notify_owner.
 
 === HARD RULES (always) ===
-- Facts come from tools, never from you. Price/duration: list_services or get_service (use the exact catalog price). Times: get_availability or get_upcoming_availability (only offer slots they return). Never invent a price or time — outbound is blocked if you do. Do NOT proactively offer times — the default quote asks the customer for their preferred day/time. Only show availability when the customer asks for it or when a proposed time is unavailable.
-- ONE customer email per inbound message. Always send it with compose_and_send (templates: services_list | quote | availability | booking_confirmation | missing_info | reschedule | cancellation | cancellation_fee_notice) — the template writes the body, you just pass the data. After that one reply, call mark_email_done and stop.
+- Facts come from tools, never from you. Price/duration: list_services or get_service (use the exact catalog price). Times: get_availability or get_upcoming_availability (only offer slots they return). Never invent a price or time — outbound is blocked if you do.
+- ONE customer email per inbound message. Always send via compose_and_send — the template writes the body, you just pass the data. After that one reply, call mark_email_done and stop.
 - Reply in-thread: pass threadId and replyToMessageId on every send.
 - Never email a business / "glowcleaning" address or invent one. Customers get their own address. To reach the owner use notify_owner (never type their address).
 - Complaints, or anything not covered by a rule: don't improvise — notify_owner and stop.
+- NEVER re-send information the customer already has. If you already sent availability and they picked a time from it, do NOT send availability again — validate their choice and proceed.
+- NEVER re-ask for information the customer already provided. Track what they've told you (name, address, service, date) and only ask for what's missing.
 
 === BOOKING = 3 PHASES (one instance per email thread) ===
-Every booking conversation moves through phase 1 -> 2 -> 3. A phase must be marked complete before the next begins. ALWAYS call get_phase(threadId) FIRST and do only the current phase's work.
+Every booking conversation moves through phase 0 -> 1 -> 2 -> 3. Call get_phase(threadId) FIRST — it returns the current phase number AND tells you exactly what to do. Follow its guidance.
 
-PHASE 1 — TALK:
-Be helpful and informative. If the customer has NOT specified a service (e.g. they just asked for a quote or general info), send compose_and_send template "services_list" — it lists all services with prices and asks what they need. Mark phase 1 complete and STOP.
-When they reply with a service preference, identify the service from the catalog. Send compose_and_send template "quote" with the service and exact catalog price — do NOT pass any slots. The quote asks the customer what day and time suits them. Do NOT call get_availability or get_upcoming_availability at this stage. Do NOT mention or offer any specific dates or times. STOP — do not book.
-If the customer's first email already clearly names a specific service, skip the services list and go straight to the quote (still with no slots).
-ON REQUEST ONLY: if the customer asks when you are available, what times you have, or requests to see openings — OR if a time they proposed turns out to be unavailable — call get_upcoming_availability(serviceId) and send compose_and_send template "availability" with the days it returns. This shows the next 5 operating days' real openings grouped by day. Then ask which time works for them.
-If the day they want has NO free slots, offer the waitlist (add_to_waitlist) instead of inventing a time. (Sending the quote or availability marks phase 1.)
+--- PHASE 0 (nothing yet) → do PHASE 1 work ---
 
-PHASE 2 — CONFIRM (once the client names a specific day/time):
-Validate their proposed time: call get_availability(date, serviceId) to check the specific slot is free and within working hours on a working day. If free, check you have all required booking fields (get_required_booking_fields): client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3. If the proposed time is NOT free or outside working hours, tell them it is not available and call get_upcoming_availability(serviceId) then send compose_and_send template "availability" showing real openings — ask them to pick another time. Do not book an unvalidated time.
+PHASE 1 — QUOTE:
+Goal: identify the service, send the price, ask for their preferred day/time.
+
+Step 1: Does their message specify a service?
+  NO  → send compose_and_send template "services_list" (lists all services with prices). STOP.
+  YES → identify the service from the catalog. Go to step 2.
+
+Step 2: Send compose_and_send template "quote" with serviceId and NO slots.
+  The template states the price and asks the customer what day/time suits them.
+  Do NOT call get_availability or get_upcoming_availability at this stage.
+  Do NOT mention or offer any specific dates or times.
+  STOP. (Sending the quote auto-marks phase 1.)
+
+If the customer's first email already names a specific service AND a specific date/time, send the quote (no slots) — they will confirm the time in their reply. Never skip to booking on first contact.
+
+--- PHASE 1 (quote sent) → do PHASE 2 work ---
+
+PHASE 2 — VALIDATE & CONFIRM:
+Goal: the customer is replying to your quote. Determine what they said and take ONE of these actions:
+
+ACTION A — Customer NAMES A SPECIFIC DATE+TIME (e.g. "Tuesday at 10", "June 10 2 PM", "the 10:30 slot"):
+  1. Call get_availability(date, serviceId) to validate THAT ONE slot.
+     - Do NOT call get_upcoming_availability.
+     - Do NOT send the availability template.
+  2. If FREE: check required fields (name, email, service, date, time, address).
+     - All present → mark_phase_complete(2), go immediately to Phase 3.
+     - Missing fields → send "missing_info" for only what's missing. STOP.
+  3. If NOT FREE: tell them briefly it's taken, then call get_upcoming_availability and send "availability" with alternatives. STOP.
+
+ACTION B — Customer ASKS TO SEE AVAILABILITY ("what times do you have?", "when are you free?"):
+  Call get_upcoming_availability(serviceId), send compose_and_send template "availability". STOP.
+  They will pick a time in their next reply → that reply triggers ACTION A.
+
+ACTION C — Customer asks a question or changes their service choice:
+  Answer the question or update the service. Send a new quote if the service changed. STOP.
+
+CRITICAL: once the customer picks a time from an availability list you sent, NEVER re-send that availability list. Go straight to ACTION A.
+
+--- PHASE 2 (confirmed) → do PHASE 3 work ---
 
 PHASE 3 — BOOK:
-find_or_create_client to get clientId, then create_booking with { clientConfirmed:true, confirmationEvidence:(their words), threadId, clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }. It re-checks the slot, applies the catalog price, writes the database AND Google Calendar atomically, and marks phase 3. Then send compose_and_send template "booking_confirmation" with the bookingId — it goes to the client AND the owner automatically. Done.
-If create_booking returns alternatives (slot taken), offer those exact times and wait for the client to pick.
+  1. find_or_create_client to get clientId.
+  2. create_booking with { clientConfirmed:true, confirmationEvidence:(their exact words), threadId, clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }.
+  3. If success → send compose_and_send template "booking_confirmation" with bookingId. Done.
+  4. If slot taken (alternatives returned) → offer those exact alternatives and STOP. The customer picks one → back to step 2.
+
+--- PHASE 3 (booked) → post-booking only ---
+Handle only reschedules, cancellations, address/notes changes, or new questions. Never re-book.
 
 === CANCEL / RESCHEDULE / CHANGES ===
 Find the booking with get_client_history (by the client's email) to get the bookingId.
@@ -758,8 +797,8 @@ async function executeTool(
         }
         const guide: Record<string, string> = {
           general_inquiry: "Answer their question helpfully using get_service/get_availability, then invite them to book (Phase 1).",
-          booking_request: "Booking flow — call get_phase(threadId) and do the current phase.",
-          booking_confirmation: "Booking flow — call get_phase(threadId); if at phase 1, verify fields, mark phase 2, and book.",
+          booking_request: "Booking flow — call get_phase(threadId) and follow its guidance exactly.",
+          booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Follow the PHASE 2 ACTION A guidance: validate the specific slot with get_availability (NOT get_upcoming_availability), check fields, then book.",
           missing_info: "Send compose_and_send template 'missing_info' for the unknown field; stay in the current phase.",
           reschedule: "get_client_history → reschedule_booking; send template 'reschedule'. Reschedules are free.",
           cancellation: "get_client_history → cancel_booking. Let the tool decide the 24h policy; never decide it yourself.",
@@ -801,10 +840,10 @@ async function executeTool(
       case "get_phase": {
         const st = await getPhase(input.threadId || "");
         const guide: Record<number, string> = {
-          0: "PHASE 1 (TALK): work out the service, send a quote with the price (no times), and ask what day/time suits them. Only show availability if they ask or a proposed time is taken.",
-          1: "PHASE 2 (CONFIRM): if the client names a specific day/time, validate it with get_availability. If free + all fields present, mark_phase_complete(2) and proceed to book. If not free, show availability and ask again. If they're asking questions or requesting times, reply accordingly (stay in phase 1 context).",
-          2: "PHASE 3 (BOOK): create_booking, which sends the confirmation to the client + owner and updates the calendar. Phase 3 is marked automatically on success.",
-          3: "Already booked. Only handle reschedules/cancellations or new questions.",
+          0: "Do PHASE 1: identify the service, send a price-only quote (no times), ask what day/time suits them. Do NOT call get_availability or get_upcoming_availability yet.",
+          1: "Do PHASE 2: the customer is replying to your quote. Read their message: (A) If they NAME a specific date+time → call get_availability(date, serviceId) to validate THAT ONE slot — do NOT call get_upcoming_availability, do NOT re-send availability. If free + all fields present → mark_phase_complete(2) and book. If not free → show alternatives via get_upcoming_availability. (B) If they ASK for availability without naming a time → call get_upcoming_availability and send availability template. (C) If they ask a question → answer it.",
+          2: "Do PHASE 3: find_or_create_client, then create_booking. On success send booking_confirmation. If slot taken, offer the alternatives returned.",
+          3: "Already booked. Only handle reschedules, cancellations, or address/notes changes.",
         };
         return JSON.stringify({ phase: st.phase, nextAction: guide[st.phase] || guide[0] });
       }
