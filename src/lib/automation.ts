@@ -169,6 +169,24 @@ YOUR PROTOCOL:
 4. After every action, call log_operation to record what you did.
 5. After all actions, call mark_email_done to prevent reprocessing.
 
+=== BOOKING WORKFLOW — FOLLOW THESE STAGES IN ORDER, NEVER SKIP AHEAD ===
+A booking is only ever created AFTER the client has explicitly confirmed. On a client's first message you only ever do Stage 1 and Stage 2, then stop.
+
+STAGE 1 — GATHER INFORMATION (nothing else):
+Work out what the client wants. Use READ-ONLY tools only: list_services / get_service (price from the catalog), get_availability (real free slots from the database). Do not book, do not promise anything. If required details are missing (service, address, preferred date), send ONE missing_info email and stop.
+
+STAGE 2 — CONFIRM THE DETAILS WITH THE CLIENT:
+Send the client the proposed booking details — service, exact catalog price, and specific available time(s) — with compose_and_send (quote). Ask them to confirm. Then STOP. Do NOT create a booking. Wait for their reply.
+
+STAGE 3 — CREATE THE BOOKING (only once the client confirms):
+When the client's reply explicitly accepts a specific time, call create_booking with clientConfirmed:true and confirmationEvidence set to the client's own words. This writes the booking to the database AND the Google Calendar together, atomically. If the slot was taken meanwhile it returns alternatives — go back to Stage 2 with those.
+
+STAGE 4 — SEND THE CONFIRMED BOOKING EMAIL:
+Send booking_confirmation with compose_and_send, using the bookingId from Stage 3.
+
+STAGE 5 — CALENDAR:
+The Google Calendar event is created as part of Stage 3 (atomic with the booking, so the two can never disagree). If create_booking reported a calendar error, notify the owner.
+
 === WORK IN A READ → ACT → VERIFY CYCLE ===
 The MANDATORY RULES are always present in your instructions above — they are in front of you every step, so you do NOT need to call read_rules each turn (use it only if you are genuinely unsure of a detail). Operate like this:
 1. GATHER: you may call multiple READ-ONLY tools in a single turn (list_services, get_service, get_availability, get_booking) to collect everything you need at once.
@@ -413,10 +431,12 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   {
     name: "create_booking",
     description:
-      "Create a booking. Re-checks the slot is free, takes price/duration from the catalog by service_id, writes the booking to the database (source of truth) AND mirrors it to Google Calendar in one step. Returns confirmed details, or {success:false, alternatives} if the slot is taken. Call find_or_create_client first for clientId, and get_availability to pick a free startTime. Do NOT call create_booking_record after this — it already records to the database.",
+      "Create a booking — STAGE 3 of the workflow. ONLY call this after the client has explicitly confirmed the specific details you proposed to them (date, time, service). Never call it on a first contact or from an inquiry. Re-checks the slot is free, takes price/duration from the catalog by service_id, writes the booking to the database (source of truth) AND mirrors it to Google Calendar in one step. Returns confirmed details, or {success:false, alternatives} if the slot is taken. Requires clientConfirmed:true and confirmationEvidence (the client's own words accepting the details).",
     input_schema: {
       type: "object" as const,
       properties: {
+        clientConfirmed: { type: "boolean", description: "Must be true. Set only when the client has explicitly accepted the specific date/time/service you proposed." },
+        confirmationEvidence: { type: "string", description: "The client's own words showing they accepted (e.g. 'yes, book me for Tuesday 8am')." },
         clientId: { type: "string" },
         serviceId: { type: "string", description: "From list_services" },
         date: { type: "string", description: "YYYY-MM-DD" },
@@ -428,7 +448,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         employeeEmail: { type: "string" },
         notes: { type: "string" },
       },
-      required: ["clientId", "serviceId", "date", "startTime", "address"],
+      required: ["clientConfirmed", "confirmationEvidence", "clientId", "serviceId", "date", "startTime", "address"],
     },
   },
   {
@@ -823,6 +843,13 @@ async function executeTool(
         return JSON.stringify(slots, null, 2);
       }
       case "create_booking": {
+        if (input.clientConfirmed !== true || !String(input.confirmationEvidence || "").trim()) {
+          return JSON.stringify({
+            success: false,
+            blocked: true,
+            reason: "Not yet confirmed by the client. Do NOT book yet. Complete STAGE 2 first: send the client the proposed details (service, price, specific time) and wait for them to explicitly confirm. Only call create_booking once they have accepted, passing clientConfirmed:true and their words as confirmationEvidence.",
+          });
+        }
         const r = await bookingService.createBookingGuarded(accessToken, {
           clientId: input.clientId,
           clientEmail: input.clientEmail,
