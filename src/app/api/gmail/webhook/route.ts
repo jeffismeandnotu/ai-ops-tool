@@ -3,7 +3,7 @@ import * as gmail from "@/lib/gmail";
 import { runAutomationForMessages } from "@/lib/automation";
 import {
   getFreshAccessToken,
-  getLastHistoryId,
+  getWatchState,
   saveWatchState,
 } from "@/lib/google-auth";
 
@@ -47,7 +47,9 @@ export async function POST(req: NextRequest) {
 
     // 4. Baseline historyId. If we have none yet, set it and wait for
     //    the next notification (nothing to diff against).
-    const lastHistoryId = await getLastHistoryId(emailAddress);
+    const { historyId: lastHistoryId, expiration } = await getWatchState(
+      emailAddress
+    );
     if (!lastHistoryId) {
       await saveWatchState(emailAddress, notificationHistoryId);
       return NextResponse.json({ ok: true, note: "baseline set" });
@@ -62,6 +64,24 @@ export async function POST(req: NextRequest) {
     // 6. Advance the cursor before processing so a slow run doesn't
     //    cause the next notification to re-pull the same window.
     await saveWatchState(emailAddress, notificationHistoryId);
+
+    // 6b. Self-renew the watch when within 24h of expiry (or unknown).
+    //     This makes the daily cron a safety net, not a hard dependency:
+    //     any inbound activity keeps the watch alive.
+    const soon = Date.now() + 24 * 60 * 60 * 1000;
+    if (!expiration || expiration.getTime() < soon) {
+      try {
+        const topic =
+          process.env.GMAIL_PUBSUB_TOPIC ||
+          "projects/ai-ops-tool/topics/gmail-push";
+        const w = await gmail.watchMailbox(accessToken, topic);
+        if (w.historyId) {
+          await saveWatchState(emailAddress, String(w.historyId), w.expiration);
+        }
+      } catch (e: any) {
+        console.error("watch self-renew failed:", e?.message || e);
+      }
+    }
 
     if (messageIds.length === 0) {
       return NextResponse.json({ ok: true, processed: 0 });

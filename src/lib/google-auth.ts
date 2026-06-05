@@ -95,3 +95,16 @@ export async function getLastHistoryId(email: string): Promise<string | null> {
   const rows = await sql`SELECT history_id FROM ai_gmail_watch WHERE email = ${email} LIMIT 1`;
   return rows[0]?.history_id || null;
 }
+
+export async function getWatchState(
+  email: string
+): Promise<{ historyId: string | null; expiration: Date | null }> {
+  await ensureTables();
+  const sql = getDb();
+  const rows = await sql`SELECT history_id, expiration FROM ai_gmail_watch WHERE email = ${email} LIMIT 1`;
+  if (!rows[0]) return { historyId: null, expiration: null };
+  return {
+    historyId: rows[0].history_id || null,
+    expiration: rows[0].expiration ? new Date(rows[0].expiration) : null,
+  };
+}
