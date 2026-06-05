@@ -118,7 +118,7 @@ import { getPhase, setPhase } from "@/lib/booking-phases";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
-import { validateOutboundFacts, servicesListEmail, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
+import { validateOutboundFacts, servicesListEmail, quoteEmail, availabilityEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
 import { recordClassification, scanRisk } from "@/lib/triage";
 import * as waitlist from "@/lib/waitlist";
 import * as fs from "fs";
@@ -176,8 +176,8 @@ Before anything else, call classify_email(threadId, intent, confidence, risk) an
 - MULTIPLE INTENTS in one email: handle the highest-priority one — escalation beats everything; otherwise cancellation/reschedule before new bookings. Cover it in your single reply; escalate the rest via notify_owner.
 
 === HARD RULES (always) ===
-- Facts come from tools, never from you. Price/duration: list_services or get_service (use the exact catalog price). Times: get_availability (only offer slots it returns). Never invent a price or time — outbound is blocked if you do.
-- ONE customer email per inbound message. Always send it with compose_and_send (templates: quote | booking_confirmation | missing_info | reschedule | cancellation | cancellation_fee_notice) — the template writes the body, you just pass the data. After that one reply, call mark_email_done and stop.
+- Facts come from tools, never from you. Price/duration: list_services or get_service (use the exact catalog price). Times: get_availability or get_upcoming_availability (only offer slots they return). Never invent a price or time — outbound is blocked if you do. Do NOT proactively offer times — the default quote asks the customer for their preferred day/time. Only show availability when the customer asks for it or when a proposed time is unavailable.
+- ONE customer email per inbound message. Always send it with compose_and_send (templates: services_list | quote | availability | booking_confirmation | missing_info | reschedule | cancellation | cancellation_fee_notice) — the template writes the body, you just pass the data. After that one reply, call mark_email_done and stop.
 - Reply in-thread: pass threadId and replyToMessageId on every send.
 - Never email a business / "glowcleaning" address or invent one. Customers get their own address. To reach the owner use notify_owner (never type their address).
 - Complaints, or anything not covered by a rule: don't improvise — notify_owner and stop.
@@ -186,11 +186,14 @@ Before anything else, call classify_email(threadId, intent, confidence, risk) an
 Every booking conversation moves through phase 1 -> 2 -> 3. A phase must be marked complete before the next begins. ALWAYS call get_phase(threadId) FIRST and do only the current phase's work.
 
 PHASE 1 — TALK:
-Be helpful and informative. If the customer has NOT specified a service (e.g. they just asked for a quote or general info), send compose_and_send template "services_list" — it lists all services with prices and asks what they need. Mark phase 1 complete and STOP. When they reply with a preference, you are still in phase 1: identify the service, get_availability for real free times, and send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Pull get_availability immediately before quoting and pass its exact slot labels verbatim — the send is blocked if any offered time isn't actually free. If the day they want has NO free slots, offer the waitlist (add_to_waitlist) instead of inventing a time. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
-If the customer's first email already clearly names a specific service AND a date/preference, skip the services list and go straight to the quote.
+Be helpful and informative. If the customer has NOT specified a service (e.g. they just asked for a quote or general info), send compose_and_send template "services_list" — it lists all services with prices and asks what they need. Mark phase 1 complete and STOP.
+When they reply with a service preference, identify the service from the catalog. Send compose_and_send template "quote" with the service and exact catalog price — do NOT pass any slots. The quote asks the customer what day and time suits them. Do NOT call get_availability or get_upcoming_availability at this stage. Do NOT mention or offer any specific dates or times. STOP — do not book.
+If the customer's first email already clearly names a specific service, skip the services list and go straight to the quote (still with no slots).
+ON REQUEST ONLY: if the customer asks when you are available, what times you have, or requests to see openings — OR if a time they proposed turns out to be unavailable — call get_upcoming_availability(serviceId) and send compose_and_send template "availability" with the days it returns. This shows the next 5 operating days' real openings grouped by day. Then ask which time works for them.
+If the day they want has NO free slots, offer the waitlist (add_to_waitlist) instead of inventing a time. (Sending the quote or availability marks phase 1.)
 
-PHASE 2 — CONFIRM (only once the client replies accepting a time):
-Read their confirmation. Call get_required_booking_fields and check you have every one: client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3.
+PHASE 2 — CONFIRM (once the client names a specific day/time):
+Validate their proposed time: call get_availability(date, serviceId) to check the specific slot is free and within working hours on a working day. If free, check you have all required booking fields (get_required_booking_fields): client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3. If the proposed time is NOT free or outside working hours, tell them it is not available and call get_upcoming_availability(serviceId) then send compose_and_send template "availability" showing real openings — ask them to pick another time. Do not book an unvalidated time.
 
 PHASE 3 — BOOK:
 find_or_create_client to get clientId, then create_booking with { clientConfirmed:true, confirmationEvidence:(their words), threadId, clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }. It re-checks the slot, applies the catalog price, writes the database AND Google Calendar atomically, and marks phase 3. Then send compose_and_send template "booking_confirmation" with the bookingId — it goes to the client AND the owner automatically. Done.
@@ -335,6 +338,18 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "get_upcoming_availability",
+    description:
+      "Return real free slots for the next 5 operating days (working days with at least one opening). Call this ONLY when the customer asks what times are available, or when a time they proposed is unavailable. Never call it proactively — the default quote asks the customer for their preferred time.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        service_id: { type: "string", description: "Service id (determines duration)" },
+      },
+      required: ["service_id"],
+    },
+  },
+  {
     name: "create_inquiry",
     description:
       "Record an inbound customer email as a structured inquiry. Call this once per business email you handle, before responding.",
@@ -372,13 +387,13 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   {
     name: "compose_and_send",
     description:
-      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (all services overview — use when the customer hasn't specified a service), quote (specific service with times), booking_confirmation, missing_info, reschedule, cancellation, cancellation_fee_notice. (Plain send_email is for internal/owner notes only.)",
+      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (all services overview — use when the customer hasn't specified a service), quote (specific service — default: no slots, asks customer for their preferred time; pass slots only if showing availability on request), availability (multi-day availability listing from get_upcoming_availability), booking_confirmation, missing_info, reschedule, cancellation, cancellation_fee_notice. (Plain send_email is for internal/owner notes only.)",
     input_schema: {
       type: "object" as const,
       properties: {
         template: {
           type: "string",
-          enum: ["services_list", "quote", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice"],
+          enum: ["services_list", "quote", "availability", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice"],
         },
         to: { type: "array", items: { type: "string" } },
         cc: { type: "array", items: { type: "string" } },
@@ -387,7 +402,8 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         firstName: { type: "string" },
         // quote
         serviceId: { type: "string", description: "for quote: which service" },
-        slots: { type: "array", items: { type: "string" }, description: "for quote: labels from get_availability only" },
+        slots: { type: "array", items: { type: "string" }, description: "for quote: optional — labels from get_availability. Omit to send a price-only quote that asks the customer for their preferred time." },
+        days: { type: "array", items: { type: "object", properties: { date: { type: "string" }, weekday: { type: "string" }, slots: { type: "array", items: { type: "string" } } } }, description: "for availability: the structured days array from get_upcoming_availability" },
         offerContract: { type: "boolean", description: "for quote: true if the request signals recurring/commercial work" },
         // booking_confirmation / reschedule / cancellation
         bookingId: { type: "string", description: "for booking_confirmation/reschedule/cancellation: the booking id" },
@@ -785,8 +801,8 @@ async function executeTool(
       case "get_phase": {
         const st = await getPhase(input.threadId || "");
         const guide: Record<number, string> = {
-          0: "PHASE 1 (TALK): respond helpfully, work out the service, and ask the client if they'd like to go ahead with booking. Then mark_phase_complete(1).",
-          1: "PHASE 2 (CONFIRM): if this message is the client confirming, verify the required fields, then mark_phase_complete(2) and proceed to book. If they're still asking questions, keep talking (stay in phase 1).",
+          0: "PHASE 1 (TALK): work out the service, send a quote with the price (no times), and ask what day/time suits them. Only show availability if they ask or a proposed time is taken.",
+          1: "PHASE 2 (CONFIRM): if the client names a specific day/time, validate it with get_availability. If free + all fields present, mark_phase_complete(2) and proceed to book. If not free, show availability and ask again. If they're asking questions or requesting times, reply accordingly (stay in phase 1 context).",
           2: "PHASE 3 (BOOK): create_booking, which sends the confirmation to the client + owner and updates the calendar. Phase 3 is marked automatically on success.",
           3: "Already booked. Only handle reschedules/cancellations or new questions.",
         };
@@ -841,6 +857,10 @@ async function executeTool(
         const result = await availability.getAvailability(input.date, input.service_id);
         return JSON.stringify(result, null, 2);
       }
+      case "get_upcoming_availability": {
+        const result = await availability.getUpcomingAvailability(input.service_id, 5);
+        return JSON.stringify(result, null, 2);
+      }
       case "create_inquiry": {
         const inq = await clientsDb.createInquiry({
           threadId: input.threadId,
@@ -892,38 +912,58 @@ async function executeTool(
         } else if (t === "quote") {
           const svc = catalog.getService(input.serviceId);
           if (!svc) return JSON.stringify({ success: false, error: `Unknown service_id '${input.serviceId}'` });
-          // Every offered time MUST be verified free against the source of truth.
           const rawSlots = (input.slots || []).map((s: any) => (typeof s === "string" ? s : s?.label || ""));
-          if (rawSlots.length === 0) {
-            return JSON.stringify({ success: false, blocked: true, error: "A quote must offer at least one time. Call get_availability and pass the exact slot labels it returns." });
-          }
-          const badSlots: string[] = [];
-          for (const lbl of rawSlots) {
-            const m = String(lbl).match(/(\d{4}-\d{2}-\d{2})[ T]+(\d{1,2}:\d{2})/);
-            if (!m) {
-              badSlots.push(`"${lbl}" — not a recognized slot; use the exact "YYYY-MM-DD HH:MM" label from get_availability`);
-              continue;
+          // If slots are provided, validate each one is actually free
+          if (rawSlots.length > 0) {
+            const badSlots: string[] = [];
+            for (const lbl of rawSlots) {
+              const m = String(lbl).match(/(\d{4}-\d{2}-\d{2})[ T]+(\d{1,2}:\d{2})/);
+              if (!m) {
+                badSlots.push(`"${lbl}" — not a recognized slot; use the exact "YYYY-MM-DD HH:MM" label from get_availability`);
+                continue;
+              }
+              const hhmm = m[2].length === 4 ? `0${m[2]}` : m[2];
+              const chk = await availability.isSlotFree(m[1], input.serviceId, hhmm);
+              if (!chk.free) badSlots.push(`"${lbl}" — ${chk.reason || "not free"}`);
             }
-            const hhmm = m[2].length === 4 ? `0${m[2]}` : m[2];
-            const chk = await availability.isSlotFree(m[1], input.serviceId, hhmm);
-            if (!chk.free) badSlots.push(`"${lbl}" — ${chk.reason || "not free"}`);
-          }
-          if (badSlots.length) {
-            return JSON.stringify({
-              success: false,
-              blocked: true,
-              error: `Cannot send — these offered times are not free/valid: ${badSlots.join("; ")}. Call get_availability(date, serviceId) and offer ONLY the exact slot labels it returns. Never invent or reuse stale times.`,
-            });
+            if (badSlots.length) {
+              return JSON.stringify({
+                success: false,
+                blocked: true,
+                error: `Cannot send — these offered times are not free/valid: ${badSlots.join("; ")}. Call get_availability(date, serviceId) and offer ONLY the exact slot labels it returns. Never invent or reuse stale times.`,
+              });
+            }
           }
           built = quoteEmail({
             firstName: input.firstName,
             serviceName: svc.name,
             price: svc.price,
             description: svc.description,
-            slots: (input.slots || []).map((s: string) => ({ label: s })),
+            slots: rawSlots.map((s: string) => ({ label: s })),
             offerContract: !!input.offerContract,
           });
           allowedPrices = [svc.price];
+        } else if (t === "availability") {
+          const days = input.days || [];
+          if (!days.length) return JSON.stringify({ success: false, error: "No days provided. Call get_upcoming_availability first." });
+          // Validate every slot label in every day
+          const badSlots: string[] = [];
+          const svcId = input.serviceId;
+          if (svcId) {
+            for (const day of days) {
+              for (const lbl of (day.slots || [])) {
+                const m = String(lbl).match(/(\d{4}-\d{2}-\d{2})[ T]+(\d{1,2}:\d{2})/);
+                if (!m) { badSlots.push(`"${lbl}" — not recognized`); continue; }
+                const hhmm = m[2].length === 4 ? `0${m[2]}` : m[2];
+                const chk = await availability.isSlotFree(m[1], svcId, hhmm);
+                if (!chk.free) badSlots.push(`"${lbl}" — ${chk.reason || "not free"}`);
+              }
+            }
+          }
+          if (badSlots.length) {
+            return JSON.stringify({ success: false, blocked: true, error: `Stale slots: ${badSlots.join("; ")}. Re-call get_upcoming_availability.` });
+          }
+          built = availabilityEmail({ firstName: input.firstName, days });
         } else if (t === "booking_confirmation") {
           const b = await clientsDb.getBookingById(input.bookingId);
           if (!b) return JSON.stringify({ success: false, error: `Booking '${input.bookingId}' not found` });
@@ -992,11 +1032,13 @@ async function executeTool(
         // Auto-record the proposal so a later confirmation reply can be booked
         // (the booking gate requires a prior proposal). Reliable — not dependent
         // on the model separately calling create_quote.
-        if (t === "quote") {
-          // Sending the quote = TALK phase done for this thread.
+        if (t === "quote" || t === "availability") {
+          // Sending the quote or availability = TALK phase done for this thread.
           if (input.threadId) {
             try { await setPhase(input.threadId, 1, ctx.messageId || "unknown"); } catch {}
           }
+        }
+        if (t === "quote") {
           const svcQ = catalog.getService(input.serviceId);
           if (svcQ) {
             try {
