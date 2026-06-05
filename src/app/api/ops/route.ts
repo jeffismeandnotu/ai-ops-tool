@@ -4,9 +4,13 @@ import { authOptions } from "@/lib/auth";
 import { readOpsLog, readProcessedEmails, getOpsLogSummary } from "@/lib/ops-log";
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const secret = req.nextUrl.searchParams.get("secret");
+  const hasSecret = !!secret && secret === process.env.CRON_SECRET;
+  if (!hasSecret) {
+    const session = await getServerSession(authOptions);
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
   }
 
   const view = req.nextUrl.searchParams.get("view") || "summary";
