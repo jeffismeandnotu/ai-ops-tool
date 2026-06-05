@@ -129,6 +129,10 @@ function loadRules(): string {
   }
 }
 
+// Injected after every tool result to force the read -> act -> verify cycle.
+const RULE_CHECK =
+  "RULE CHECK — before your next action: re-read the MANDATORY RULES (call read_rules if you need the full text) and confirm the result above complies with every rule (correct price from the catalog, slot from get_availability, all required fields present, no discounts/negotiation outside the contract feature, complaints escalated, customer emails sent only via compose_and_send). If anything violated a rule, fix it now before doing anything else. Take ONE action at a time.";
+
 // --- Classification Types ---
 export type EmailClassification =
   | "BOOKING_REQUEST"
@@ -162,6 +166,14 @@ YOUR PROTOCOL:
    - Check details: are ALL required fields present before confirming?
 4. After every action, call log_operation to record what you did.
 5. After all actions, call mark_email_done to prevent reprocessing.
+
+=== WORK IN A READ → ACT → VERIFY CYCLE (one action at a time) ===
+Operate strictly like this, repeating for every action:
+1. READ: call read_rules (or re-read the MANDATORY RULES already in your instructions).
+2. ACT: take exactly ONE action (one tool call that changes something — send, book, reschedule, cancel, record).
+3. VERIFY: after the result comes back, confirm it complied with the rules. If it violated any rule, correct it before doing anything else.
+4. Repeat from step 1 for the next action.
+Never batch multiple changing actions without re-reading and verifying between them. After every tool result you will be reminded to do this — actually do it.
 
 === DETERMINISM PROTOCOL (NON-NEGOTIABLE — these facts are owned by tools, not by you) ===
 You must NEVER state a price, duration, or time slot from your own judgement. Every such fact comes from a tool result.
@@ -218,6 +230,12 @@ OWNER: ${BUSINESS.owner.name} <${BUSINESS.owner.email}>`;
 
 // --- Automation Tools (same as chat tools + ops log tools) ---
 const AUTOMATION_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "read_rules",
+    description:
+      "Return the full mandatory rules (RULES.md). Call this before each action to re-read the rules, then verify your action complies before continuing.",
+    input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
   {
     name: "list_services",
     description:
@@ -598,6 +616,9 @@ async function executeTool(
 ): Promise<string> {
   try {
     switch (toolName) {
+      case "read_rules": {
+        return loadRules();
+      }
       case "list_services": {
         return JSON.stringify(catalog.listServices(), null, 2);
       }
@@ -1035,6 +1056,8 @@ ${emailSummaries}`;
         actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
       }
 
+      toolResults.push({ type: "text", text: RULE_CHECK });
+
       currentMessages.push({ role: "user", content: toolResults });
     }
 
@@ -1145,6 +1168,7 @@ ${emailSummaries}`;
         toolResults.push({ type: "tool_result", tool_use_id: t.id, content: result });
         actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
       }
+      toolResults.push({ type: "text", text: RULE_CHECK });
       currentMessages.push({ role: "user", content: toolResults });
     }
   } catch (err: any) {
