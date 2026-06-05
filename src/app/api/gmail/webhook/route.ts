@@ -8,24 +8,26 @@ import {
 } from "@/lib/google-auth";
 import { getAutomationEnabled } from "@/lib/app-settings";
 import { verifyCronSecret, verifyGmailPubSubToken } from "@/lib/webhook-verify";
+import { validatePubSubShape } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// ============================================================
-// GMAIL PUSH WEBHOOK
-// ============================================================
-// Pub/Sub POSTs here within seconds of an email landing.
-// The notification carries only { emailAddress, historyId }, so we
-// diff against the last stored historyId to fetch exactly the new
-// messages, then run the automation on them. No polling.
-// ============================================================
+const MAX_PAYLOAD_BYTES = 65536;
 
 export async function POST(req: NextRequest) {
+  // 0. Payload size cap
+  const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
+  if (contentLength > MAX_PAYLOAD_BYTES) {
+    return NextResponse.json({ error: "Payload too large" }, { status: 413 });
+  }
+
   // 1a. Shared secret (timing-safe comparison).
   const secret = req.nextUrl.searchParams.get("secret");
-  if (!verifyCronSecret(secret) && secret !== process.env.GMAIL_WEBHOOK_SECRET) {
+  const webhookSecret = process.env.GMAIL_WEBHOOK_SECRET;
+  const secretValid = verifyCronSecret(secret) || (!!webhookSecret && !!secret && secret === webhookSecret);
+  if (!secretValid) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -39,6 +41,10 @@ export async function POST(req: NextRequest) {
   try {
     // 2. Decode the wrapped Pub/Sub message.
     const body = await req.json();
+    const shapeErr = validatePubSubShape(body);
+    if (shapeErr) {
+      return NextResponse.json({ ok: true, note: shapeErr });
+    }
     const dataB64 = body?.message?.data;
     if (!dataB64) {
       // Malformed but ack it so Pub/Sub doesn't retry forever.
