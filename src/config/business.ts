@@ -73,6 +73,7 @@ export const BUSINESS = {
       name: "Regular Clean",
       duration: 150, // 2.5 hrs avg for 2-3 bed
       price: 200,
+      short: "Routine upkeep — dusting, vacuuming, kitchen & bath",
       description: "Standard residential cleaning. Dusting, vacuuming, mopping, bathroom and kitchen sanitization. Ideal for regular upkeep of homes and rental units.",
     },
     {
@@ -80,6 +81,7 @@ export const BUSINESS = {
       name: "Deep Clean",
       duration: 270, // 4.5 hrs
       price: 380,
+      short: "Top-to-bottom detail clean, inside appliances & cabinets",
       description: "Comprehensive deep cleaning including inside appliances, baseboards, door frames, inside cabinets, window tracks, and detailed sanitization. Recommended every 3-6 months.",
     },
     {
@@ -87,6 +89,7 @@ export const BUSINESS = {
       name: "Vacation Rental Turnover",
       duration: 150,
       price: 220,
+      short: "Guest-ready reset — linens, restock, full clean",
       description: "Guest-ready turnover between stays. Full clean, linen change, restocking essentials, garbage removal, bathroom and kitchen reset. Ensures 5-star reviews.",
     },
     {
@@ -94,6 +97,7 @@ export const BUSINESS = {
       name: "Move-In / Move-Out Clean",
       duration: 300, // 5 hrs
       price: 450,
+      short: "Empty-home clean for inspections & deposits",
       description: "Thorough move-in or move-out cleaning for landlord inspection. Every surface, inside all appliances, closets, baseboards, windows. Helps recover damage deposits.",
     },
     {
@@ -101,6 +105,7 @@ export const BUSINESS = {
       name: "Post-Construction Clean",
       duration: 360, // 6 hrs
       price: 550,
+      short: "Dust removal & polish after construction or reno",
       description: "Construction dust removal, debris cleanup, surface polishing, window cleaning. Prepares newly built or renovated properties for occupancy.",
     },
     {
@@ -108,6 +113,7 @@ export const BUSINESS = {
       name: "Pressure Washing",
       duration: 180,
       price: 320,
+      short: "Exterior power wash — driveways, decks, siding",
       description: "High-powered exterior cleaning for driveways, decks, sidings, patios, and common areas. Removes dirt, grime, moss, and seasonal buildup.",
     },
     {
@@ -115,6 +121,7 @@ export const BUSINESS = {
       name: "Carpet Cleaning",
       duration: 120,
       price: 220,
+      short: "Deep carpet extraction — stains, dirt, allergens",
       description: "Professional carpet cleaning. Removes deep dirt, stains, and allergens. Hot water extraction method. Price per average-sized home — large homes quoted separately.",
     },
     {
@@ -122,6 +129,7 @@ export const BUSINESS = {
       name: "Laundry Service",
       duration: 90,
       price: 85,
+      short: "Wash, dry, fold & restock rental linens",
       description: "Wash, dry, fold, and restock linens for vacation rentals and Airbnb properties. Per standard load of linens for a 2-3 bedroom unit.",
     },
     {
@@ -129,6 +137,7 @@ export const BUSINESS = {
       name: "Commercial / Office Clean",
       duration: 180,
       price: 280,
+      short: "Office & commercial space — all surfaces, restrooms",
       description: "Offices, government buildings, and commercial spaces. All surfaces, restrooms, kitchenettes, common areas, and reception. Regular contracts available at reduced rates.",
     },
   ],

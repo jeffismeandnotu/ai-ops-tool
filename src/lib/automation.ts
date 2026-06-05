@@ -195,7 +195,7 @@ PHASE 1 — QUOTE:
 Goal: identify the service, send the price, ask for their preferred day/time.
 
 Step 1: Does their message specify a service?
-  NO  → send compose_and_send template "services_list" (lists all services with prices). STOP.
+  NO  → infer the 1-3 services most relevant to what the customer described (space type, one-time vs recurring, any specifics) and call compose_and_send template "services_list" passing those serviceIds. If the message gives no usable signal at all, call it with no serviceIds (brief default shortlist). Never present more than 3 services, never include long descriptions — the template handles the format. STOP.
   YES → identify the service from the catalog. Go to step 2.
 
 Step 2: Send compose_and_send template "quote" with serviceId and NO slots.
@@ -445,7 +445,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   {
     name: "compose_and_send",
     description:
-      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (all services overview — use when the customer hasn't specified a service), quote (specific service — default: no slots, asks customer for their preferred time; pass slots only if showing availability on request), availability (multi-day availability listing from get_upcoming_availability), booking_confirmation, missing_info, reschedule, cancellation, cancellation_fee_notice. (Plain send_email is for internal/owner notes only.)",
+      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (brief 1-3 service recommendation with one-line blurbs — pass serviceIds for the most relevant services, or omit for a default shortlist; never shows the full catalog), quote (specific service — default: no slots, asks customer for their preferred time; pass slots only if showing availability on request), availability (multi-day availability listing from get_upcoming_availability), booking_confirmation, missing_info, reschedule, cancellation, cancellation_fee_notice. (Plain send_email is for internal/owner notes only.)",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -458,6 +458,8 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         threadId: { type: "string" },
         replyToMessageId: { type: "string" },
         firstName: { type: "string" },
+        // services_list
+        serviceIds: { type: "array", items: { type: "string" }, description: "for services_list: 1-3 service ids most relevant to the customer's inquiry. Omit for a brief default shortlist." },
         // quote
         serviceId: { type: "string", description: "for quote: which service" },
         slots: { type: "array", items: { type: "string" }, description: "for quote: optional — labels from get_availability. Omit to send a price-only quote that asks the customer for their preferred time." },
@@ -997,7 +999,7 @@ async function executeTool(
         let allowedPrices: number[] = [];
 
         if (t === "services_list") {
-          built = servicesListEmail({ firstName: input.firstName });
+          built = servicesListEmail({ firstName: input.firstName, serviceIds: input.serviceIds });
           allowedPrices = catalog.listServices().map((s) => s.price);
         } else if (t === "quote") {
           const svc = catalog.getService(input.serviceId);

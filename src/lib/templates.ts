@@ -74,6 +74,7 @@ function fmtMoney(n: number): string {
 
 export function servicesListEmail(o: {
   firstName?: string;
+  serviceIds?: string[];
 }): { subject: string; body: string } {
   const opener = pick([
     "Thank you for reaching out.",
@@ -81,19 +82,27 @@ export function servicesListEmail(o: {
     "We appreciate you getting in touch.",
     "Thank you for contacting us.",
   ]);
-  const lines = BUSINESS.services.map(
-    (s) => `  • ${s.name} — ${fmtMoney(s.price)} (${s.duration} min)\n    ${s.description}`
+  const defaultIds = ["regular", "deep", "moveout"];
+  const ids = o.serviceIds?.length ? o.serviceIds : defaultIds;
+  const services = ids
+    .map((id) => BUSINESS.services.find((s) => s.id === id))
+    .filter(Boolean) as typeof BUSINESS.services;
+  const lines = services.map(
+    (s) => `  • ${s.name} — ${fmtMoney(s.price)} — ${s.short}`
   );
   const closer = pick([
-    "Please let us know what type of space you need cleaned and any specific requirements, and we will recommend the best fit and provide available times.",
-    "Reply with a few details about your space and what you need, and we will suggest the right service and find suitable openings.",
-    "Let us know what you have in mind and we will match you with the right service and available times.",
+    "How many bedrooms and bathrooms, and is this a one-time clean or something recurring?",
+    "Roughly how big is the space, and is it a one-off or regular service?",
+    "Could you tell me a bit about the space and whether you're looking for a one-time or ongoing clean?",
   ]);
+  const intro = ids === defaultIds
+    ? "Here are a few of our most popular services:"
+    : "Based on what you described, these services would be the best fit:";
   const body = [
     greeting(o.firstName),
     opener,
-    "Below is an overview of our services:\n",
-    lines.join("\n\n"),
+    `${intro}\n`,
+    lines.join("\n"),
     "",
     closer,
     signoff(),
