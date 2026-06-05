@@ -121,6 +121,37 @@ async function ensureClientTables() {
     action_taken TEXT
   )`;
 
+  await sql`CREATE TABLE IF NOT EXISTS inquiries (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT,
+    gmail_message_id TEXT,
+    client_id TEXT REFERENCES clients(id),
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    summary TEXT,
+    requested_service_id TEXT,
+    requested_date TEXT,
+    requested_window TEXT,
+    address TEXT,
+    raw_excerpt TEXT,
+    confidence NUMERIC(4,3),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`;
+
+  await sql`CREATE TABLE IF NOT EXISTS quotes (
+    id TEXT PRIMARY KEY,
+    inquiry_id TEXT,
+    client_id TEXT REFERENCES clients(id),
+    service_id TEXT NOT NULL,
+    service_name TEXT NOT NULL,
+    price NUMERIC(10,2) NOT NULL,
+    currency TEXT DEFAULT 'CAD',
+    valid_until DATE,
+    status TEXT NOT NULL DEFAULT 'sent',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`;
+
   _tablesReady = true;
 }
 
@@ -347,4 +378,74 @@ export async function getUpcomingBookings(days: number = 7): Promise<(Booking & 
     AND b.status = 'confirmed'
     ORDER BY b.date, b.time`;
   return rows as any;
+}
+
+// ============================================================
+// INQUIRIES — every inbound business email becomes a record
+// ============================================================
+export async function createInquiry(data: {
+  threadId?: string;
+  gmailMessageId?: string;
+  clientId?: string;
+  type: string;
+  status?: string;
+  summary?: string;
+  requestedServiceId?: string;
+  requestedDate?: string;
+  requestedWindow?: string;
+  address?: string;
+  rawExcerpt?: string;
+  confidence?: number;
+}): Promise<{ id: string }> {
+  await ensureClientTables();
+  const sql = getDb();
+  const id = genId("inq");
+  await sql`INSERT INTO inquiries (id, thread_id, gmail_message_id, client_id, type, status, summary, requested_service_id, requested_date, requested_window, address, raw_excerpt, confidence)
+    VALUES (${id}, ${data.threadId || null}, ${data.gmailMessageId || null}, ${data.clientId || null}, ${data.type}, ${data.status || "new"}, ${data.summary || null}, ${data.requestedServiceId || null}, ${data.requestedDate || null}, ${data.requestedWindow || null}, ${data.address || null}, ${(data.rawExcerpt || "").slice(0, 1000)}, ${data.confidence ?? null})`;
+  return { id };
+}
+
+export async function updateInquiryStatus(
+  inquiryId: string,
+  status: string,
+  summary?: string
+): Promise<void> {
+  await ensureClientTables();
+  const sql = getDb();
+  await sql`UPDATE inquiries SET status = ${status}, summary = COALESCE(${summary || null}, summary), updated_at = NOW() WHERE id = ${inquiryId}`;
+}
+
+export async function getOpenInquiryByThread(threadId: string): Promise<{ id: string; type: string; status: string } | null> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT id, type, status FROM inquiries WHERE thread_id = ${threadId} AND status NOT IN ('closed','escalated') ORDER BY created_at DESC LIMIT 1`;
+  return rows.length ? (rows[0] as any) : null;
+}
+
+// ============================================================
+// QUOTES — price locked from catalog at issue time
+// ============================================================
+export async function createQuote(data: {
+  inquiryId?: string;
+  clientId?: string;
+  serviceId: string;
+  serviceName: string;
+  price: number;
+  currency?: string;
+  validUntil?: string;
+}): Promise<{ id: string }> {
+  await ensureClientTables();
+  const sql = getDb();
+  const id = genId("qt");
+  await sql`INSERT INTO quotes (id, inquiry_id, client_id, service_id, service_name, price, currency, valid_until, status)
+    VALUES (${id}, ${data.inquiryId || null}, ${data.clientId || null}, ${data.serviceId}, ${data.serviceName}, ${data.price}, ${data.currency || "CAD"}, ${data.validUntil || null}, 'sent')`;
+  return { id };
+}
+
+// Bookings on a date (DB source of truth for "taken").
+export async function getBookingsOnDate(date: string): Promise<Booking[]> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM bookings WHERE date = ${date} AND status != 'cancelled' ORDER BY time`;
+  return rows as unknown as Booking[];
 }
