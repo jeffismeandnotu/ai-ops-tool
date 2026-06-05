@@ -179,11 +179,13 @@ Work out which service the client wants and collect what you need to respond. Us
 STAGE 2 — CONFIRM THE DETAILS WITH THE CLIENT:
 Send the client a quote with compose_and_send (template "quote"): the service, the exact catalog price, and 2–3 specific available times from get_availability. Ask them to reply with the time that works to confirm. Then STOP. Do NOT create a booking. Wait for their reply.
 
-STAGE 3 — CREATE THE BOOKING (only once the client confirms):
-When the client's reply explicitly accepts a specific time, call create_booking with clientConfirmed:true and confirmationEvidence set to the client's own words. This writes the booking to the database AND the Google Calendar together, atomically. If the slot was taken meanwhile it returns alternatives — go back to Stage 2 with those.
+STAGE 3 — VERIFY DETAILS, THEN CREATE THE BOOKING (only once the client confirms):
+When the client's reply explicitly accepts a specific time:
+a) Call get_required_booking_fields and confirm you have EVERY required field (client name, client email, service, date, time, address). If any is missing, send a missing_info email asking for it and STOP — do not book.
+b) When all fields are present, call create_booking with clientConfirmed:true and confirmationEvidence set to the client's own words. This writes the booking to the database AND Google Calendar together, atomically. If the slot was taken meanwhile it returns alternatives — go back to Stage 2.
 
 STAGE 4 — SEND THE CONFIRMED BOOKING EMAIL:
-Send booking_confirmation with compose_and_send, using the bookingId from Stage 3.
+Send booking_confirmation with compose_and_send using the bookingId from Stage 3. It goes to BOTH the client and the owner — the owner is added automatically, so you do not need to send them a separate email.
 
 STAGE 5 — CALENDAR:
 The Google Calendar event is created as part of Stage 3 (atomic with the booking, so the two can never disagree). If create_booking reported a calendar error, notify the owner.
@@ -269,6 +271,12 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     name: "list_services",
     description:
       "Return the exact service catalog (id, name, price, duration, description). ALWAYS use this to get prices — never state a price that did not come from here.",
+    input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "get_required_booking_fields",
+    description:
+      "Return the list of fields that MUST be filled before a booking can be created. Call this when handling a booking, check you have every field, and ask the client (missing_info) for any that are missing before booking.",
     input_schema: { type: "object" as const, properties: {}, required: [] },
   },
   {
@@ -660,6 +668,19 @@ async function executeTool(
       case "list_services": {
         return JSON.stringify(catalog.listServices(), null, 2);
       }
+      case "get_required_booking_fields": {
+        return JSON.stringify({
+          requiredBeforeBooking: [
+            { field: "clientName", note: "the client's name" },
+            { field: "clientEmail", note: "usually the sender's address" },
+            { field: "serviceId", note: "which service, from the catalog" },
+            { field: "date", note: "YYYY-MM-DD" },
+            { field: "startTime", note: "HH:MM, must be a free slot from get_availability" },
+            { field: "address", note: "the service address" },
+          ],
+          rule: "All of these must be present AND the client must have confirmed before you call create_booking. Ask for any missing field with a missing_info email and stop.",
+        });
+      }
       case "get_service": {
         const svc = catalog.getService(input.service_id);
         if (!svc) return JSON.stringify({ error: `Unknown service_id '${input.service_id}'. Call list_services for valid ids.` });
@@ -778,7 +799,15 @@ async function executeTool(
         if (!check.ok) {
           return JSON.stringify({ success: false, blocked: true, error: check.violations.join("; ") });
         }
-        const sent = await gmail.sendEmail(accessToken, input.to, built.subject, built.body, input.cc, input.replyToMessageId, input.threadId);
+        // The booking confirmation also goes to the owner (same account the AI uses).
+        const ccList = [...(input.cc || [])];
+        if (t === "booking_confirmation") {
+          const ownerAddr = BUSINESS.owner.email;
+          if (ownerAddr && !ccList.some((a: string) => a.toLowerCase() === ownerAddr.toLowerCase())) {
+            ccList.push(ownerAddr);
+          }
+        }
+        const sent = await gmail.sendEmail(accessToken, input.to, built.subject, built.body, ccList, input.replyToMessageId, input.threadId);
         ccust.forEach((a: string) => ctx.repliedTo.add(a.toLowerCase()));
         // Auto-record the proposal so a later confirmation reply can be booked
         // (the booking gate requires a prior proposal). Reliable — not dependent
@@ -879,6 +908,26 @@ async function executeTool(
         return JSON.stringify(slots, null, 2);
       }
       case "create_booking": {
+        // Field completeness — all required booking fields must be present.
+        const requiredFields: Record<string, any> = {
+          clientName: input.clientName,
+          clientEmail: input.clientEmail,
+          serviceId: input.serviceId,
+          date: input.date,
+          startTime: input.startTime,
+          address: input.address,
+        };
+        const missingFields = Object.entries(requiredFields)
+          .filter(([, v]) => !String(v ?? "").trim())
+          .map(([k]) => k);
+        if (missingFields.length) {
+          return JSON.stringify({
+            success: false,
+            blocked: true,
+            missingFields,
+            reason: `Missing required booking fields: ${missingFields.join(", ")}. Do NOT book. Ask the client for these with a missing_info email, then wait for their reply.`,
+          });
+        }
         if (input.clientConfirmed !== true || !String(input.confirmationEvidence || "").trim()) {
           return JSON.stringify({
             success: false,
