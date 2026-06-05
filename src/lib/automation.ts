@@ -993,14 +993,28 @@ async function runAgentLoop(
 
   try {
     for (let i = 0; i < 40; i++) {
-      const resp = await llm.chat.completions.create({
-        model: AI_MODEL,
-        temperature: 0,
-        max_tokens: 4096,
-        messages,
-        tools,
-        tool_choice: "auto",
-      });
+      let resp: any;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          resp = await llm.chat.completions.create({
+            model: AI_MODEL,
+            temperature: 0,
+            max_tokens: 4096,
+            messages,
+            tools,
+            tool_choice: "auto",
+          });
+          break;
+        } catch (e: any) {
+          const status = e?.status || e?.response?.status;
+          if (status === 429 && attempt < 5) {
+            // Free-tier rate limit (e.g. Gemini 15 RPM) — wait for the window to reset and retry.
+            await new Promise((r) => setTimeout(r, 6000 * (attempt + 1)));
+            continue;
+          }
+          throw e;
+        }
+      }
       calls++;
       inTok += resp.usage?.prompt_tokens || 0;
       outTok += resp.usage?.completion_tokens || 0;

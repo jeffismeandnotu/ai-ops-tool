@@ -5,7 +5,7 @@ import { getFreshAccessToken, getOpsEmail } from "@/lib/google-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 // ============================================================
 // TEST HARNESS — end-to-end email test over HTTPS
