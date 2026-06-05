@@ -310,12 +310,12 @@ HSTS, CSP, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-P
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AI_PROVIDER` | (auto) | Set to `"anthropic"` to force native Anthropic SDK |
-| `AI_MODEL` | `gemini-2.5-flash-lite` | Model ID for OpenAI-compatible fallback |
-| `AI_BASE_URL` | Google Generative Language | Base URL for OpenAI-compatible LLM |
+| `AI_PROVIDER` | (auto) | Set to `"anthropic"` to use native Anthropic SDK with prompt caching. **Currently set to `anthropic`.** |
+| `AI_MODEL` | `gemini-2.5-flash-lite` | Model ID (overridden when AI_PROVIDER=anthropic) |
+| `AI_BASE_URL` | Google Generative Language | Base URL for OpenAI-compatible LLM fallback |
 | `AI_API_KEY` / `GEMINI_API_KEY` | — | API key for OpenAI-compatible fallback |
 | `GMAIL_PUBSUB_TOPIC` | `projects/ai-ops-tool/topics/gmail-push` | Google Pub/Sub topic |
-| `GMAIL_PUBSUB_AUDIENCE` | — | Set to webhook URL to enable Pub/Sub OIDC verification |
+| `GMAIL_PUBSUB_AUDIENCE` | — | Webhook URL for Pub/Sub OIDC token verification. **Currently active — OIDC verification enabled.** |
 | `GOOGLE_ACCESS_TOKEN` | — | Legacy fallback (deprecated — use refresh token flow) |
 | `MAX_REPLIES_PER_SENDER_HOUR` | `5` | Per-sender email reply cap |
 | `MAX_INBOUND_PER_HOUR` | `100` | Global inbound circuit breaker |
