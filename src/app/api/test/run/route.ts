@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as gmail from "@/lib/gmail";
 import { runAutomationForMessages } from "@/lib/automation";
 import { getFreshAccessToken, getOpsEmail } from "@/lib/google-auth";
+import * as clientsDb from "@/lib/clients-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +31,12 @@ export async function POST(req: NextRequest) {
     const ops = getOpsEmail();
     const accessToken = await getFreshAccessToken(ops);
 
+    // Optional: clear this test client's future bookings so availability is clean.
+    if (body.reset) {
+      const removed = await clientsDb.deleteFutureBookingsForEmail(from);
+      return NextResponse.json({ ok: true, reset: true, removedBookings: removed });
+    }
+
     // 1. Inject a realistic inbound email into the ops inbox.
     const inserted = await gmail.insertInbound(accessToken, { from, to: ops, subject, body: text });
 
@@ -42,7 +49,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       injected: { id: inserted.id, from, subject },
-      agent: { processed: result.processed, errors: result.errors },
+      agent: { processed: result.processed, errors: result.errors, actions: result.actions },
       replies: sent.map((s) => ({ to: s.to, subject: s.subject, body: s.body })),
     });
   } catch (err: any) {

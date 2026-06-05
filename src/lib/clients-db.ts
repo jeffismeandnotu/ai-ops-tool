@@ -457,3 +457,14 @@ export async function getBookingById(bookingId: string): Promise<Booking | null>
   const rows = await sql`SELECT * FROM bookings WHERE id = ${bookingId} LIMIT 1`;
   return rows.length ? (rows[0] as unknown as Booking) : null;
 }
+
+// Delete a client's future bookings (test cleanup). Returns count removed.
+export async function deleteFutureBookingsForEmail(email: string): Promise<number> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`DELETE FROM bookings
+    WHERE date >= CURRENT_DATE
+    AND client_id IN (SELECT id FROM clients WHERE LOWER(email) = LOWER(${email}))
+    RETURNING id`;
+  return rows.length;
+}
