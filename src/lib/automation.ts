@@ -110,6 +110,10 @@ import {
   readOpsLog,
 } from "@/lib/ops-log";
 import * as clientsDb from "@/lib/clients-db";
+import * as catalog from "@/lib/catalog";
+import * as availability from "@/lib/availability";
+import * as bookingService from "@/lib/booking-service";
+import { validateOutboundFacts } from "@/lib/templates";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -193,6 +197,35 @@ OWNER: ${BUSINESS.owner.name} <${BUSINESS.owner.email}>`;
 
 // --- Automation Tools (same as chat tools + ops log tools) ---
 const AUTOMATION_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "list_services",
+    description:
+      "Return the exact service catalog (id, name, price, duration, description). ALWAYS use this to get prices — never state a price that did not come from here.",
+    input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "get_service",
+    description:
+      "Return the canonical name, price, duration, and description for one service_id. Use the price exactly as returned.",
+    input_schema: {
+      type: "object" as const,
+      properties: { service_id: { type: "string", description: "One of the ids from list_services" } },
+      required: ["service_id"],
+    },
+  },
+  {
+    name: "get_availability",
+    description:
+      "Return the real free time slots for a service on a date, computed from the bookings database (the source of truth). You may ONLY offer times this returns. Never invent a slot.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD" },
+        service_id: { type: "string", description: "Service id (determines duration)" },
+      },
+      required: ["date", "service_id"],
+    },
+  },
   {
     name: "search_emails",
     description: "Search Gmail for emails matching a query.",
@@ -477,6 +510,18 @@ async function executeTool(
 ): Promise<string> {
   try {
     switch (toolName) {
+      case "list_services": {
+        return JSON.stringify(catalog.listServices(), null, 2);
+      }
+      case "get_service": {
+        const svc = catalog.getService(input.service_id);
+        if (!svc) return JSON.stringify({ error: `Unknown service_id '${input.service_id}'. Call list_services for valid ids.` });
+        return JSON.stringify(svc, null, 2);
+      }
+      case "get_availability": {
+        const result = await availability.getAvailability(input.date, input.service_id);
+        return JSON.stringify(result, null, 2);
+      }
       case "search_emails": {
         const threads = await gmail.searchEmails(accessToken, input.query, input.maxResults || 10);
         return JSON.stringify(threads.slice(0, 10), null, 2);
@@ -486,6 +531,18 @@ async function executeTool(
         return JSON.stringify(thread, null, 2);
       }
       case "send_email": {
+        // Backstop: block any outbound whose dollar amounts aren't real catalog prices.
+        const priceCheck = validateOutboundFacts(
+          input.body || "",
+          catalog.listServices().map((s) => s.price)
+        );
+        if (!priceCheck.ok) {
+          return JSON.stringify({
+            success: false,
+            blocked: true,
+            error: "Email NOT sent — contains a price not in the catalog. Use get_service to get the exact price and rewrite. " + priceCheck.violations.join("; "),
+          });
+        }
         const sent = await gmail.sendEmail(accessToken, input.to, input.subject, input.body, input.cc, input.replyToMessageId, input.threadId);
         await appendOperation({
           type: "email_sent",
@@ -757,6 +814,7 @@ ${emailSummaries}`;
       const response = await client.messages.create({
         model: BUSINESS.ai.model,
         max_tokens: 4096,
+        temperature: 0,
         system: systemPrompt,
         tools: AUTOMATION_TOOLS,
         messages: currentMessages,
@@ -877,6 +935,7 @@ ${emailSummaries}`;
       const response = await client.messages.create({
         model: BUSINESS.ai.model,
         max_tokens: 4096,
+        temperature: 0,
         system: systemPrompt,
         tools: AUTOMATION_TOOLS,
         messages: currentMessages,
