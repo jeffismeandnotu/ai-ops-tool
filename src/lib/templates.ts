@@ -50,18 +50,17 @@ function pick<T>(arr: T[]): T {
 }
 
 function greeting(first?: string): string {
-  const withName = [`Hi ${first},`, `Hey ${first},`, `Hello ${first},`, `Hi there ${first},`];
-  const noName = ["Hi there,", "Hey there,", "Hello,"];
+  const withName = [`Hi ${first},`, `Hello ${first},`, `Good day ${first},`];
+  const noName = ["Hello,", "Hi there,", "Good day,"];
   return first && first.trim() ? pick(withName) : pick(noName);
 }
 
 function signoff(): string {
   return pick([
-    "Warmly,\nThe Glow Cleaning team",
-    "Talk soon,\nThe Glow Cleaning team",
-    "Cheers,\nThe Glow Cleaning team",
-    "All the best,\nThe Glow Cleaning team",
-    "Thanks so much,\nThe Glow Cleaning team",
+    "Kind regards,\nThe Glow Cleaning Team",
+    "Warm regards,\nThe Glow Cleaning Team",
+    "Best regards,\nThe Glow Cleaning Team",
+    "Thank you,\nThe Glow Cleaning Team",
   ]);
 }
 
@@ -77,24 +76,23 @@ export function servicesListEmail(o: {
   firstName?: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    "Thanks for reaching out!",
-    "Great to hear from you!",
-    "Happy to help you out!",
-    "Thanks for thinking of us!",
+    "Thank you for reaching out.",
+    "Thank you for your inquiry.",
+    "We appreciate you getting in touch.",
+    "Thank you for contacting us.",
   ]);
   const lines = BUSINESS.services.map(
     (s) => `  • ${s.name} — ${fmtMoney(s.price)} (${s.duration} min)\n    ${s.description}`
   );
   const closer = pick([
-    "Just let me know what you're looking for — the type of space, what needs doing — and I'll suggest the best fit and get you some times.",
-    "Tell me a bit about your place and what you need, and I'll recommend the right service and find you some openings.",
-    "Reply with what you have in mind and I'll match you up with the right service and available times.",
-    "What kind of space are we working with? Let me know and I'll point you to the right service.",
+    "Please let us know what type of space you need cleaned and any specific requirements, and we will recommend the best fit and provide available times.",
+    "Reply with a few details about your space and what you need, and we will suggest the right service and find suitable openings.",
+    "Let us know what you have in mind and we will match you with the right service and available times.",
   ]);
   const body = [
     greeting(o.firstName),
     opener,
-    "Here's what we offer:\n",
+    "Below is an overview of our services:\n",
     lines.join("\n\n"),
     "",
     closer,
@@ -113,38 +111,80 @@ export function quoteEmail(o: {
   voice?: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    "Thanks for thinking of us!",
-    "Great to hear from you!",
-    "Happy to help you get this booked.",
-    "Thanks for reaching out!",
+    "Thank you for your interest in our services.",
+    "We appreciate you reaching out.",
+    "Thank you for contacting us.",
   ]);
-  const slotIntro = pick([
-    "Here are a couple of times that would work great:",
-    "I've got a few openings that could work:",
-    "Here are some times I can offer:",
-    "A couple of slots that would suit:",
-  ]);
-  const slotLines = o.slots.slice(0, 3).map((s) => `  • ${prettySlot(s.label)}`).join("\n");
   const contract =
     o.offerContract && BUSINESS.pricing?.contract?.enabled
       ? BUSINESS.pricing.contract.line
       : "";
-  const closer = pick([
-    "Just reply with the one that suits you and I'll lock it in.",
-    "Let me know which works and I'll get it booked.",
-    "Reply with your pick and consider it done.",
-    "Tell me which time works best and I'll hold it for you.",
-  ]);
+
+  let slotBlock = "";
+  let closer: string;
+
+  if (o.slots.length) {
+    const slotIntro = pick([
+      "The following times are available:",
+      "We have these openings available:",
+      "Here are the available time slots:",
+    ]);
+    const slotLines = o.slots.slice(0, 3).map((s) => `  • ${prettySlot(s.label)}`).join("\n");
+    slotBlock = `${slotIntro}\n${slotLines}`;
+    closer = pick([
+      "Please reply with your preferred time and we will confirm your booking.",
+      "Let us know which time works best and we will get it scheduled.",
+      "Reply with your choice and we will reserve it for you.",
+    ]);
+  } else {
+    closer = pick([
+      "Just let me know which day and time would suit you, and I will check availability and confirm.",
+      "When would work best for you? Send me a preferred day and time and I will confirm availability.",
+      "Let me know the day and time you would prefer and I will get it confirmed.",
+    ]);
+  }
+
   const body = [
     greeting(o.firstName),
     opener,
     `For a ${o.serviceName}, the price is ${fmtMoney(o.price)}. That covers ${o.description}`,
     contract,
-    o.slots.length ? `${slotIntro}\n${slotLines}` : "",
+    slotBlock,
     closer,
     signoff(),
   ].filter(Boolean).join("\n\n");
   return { subject: `${o.serviceName} quote`, body };
+}
+
+export function availabilityEmail(o: {
+  firstName?: string;
+  days: { date: string; weekday: string; slots: string[] }[];
+}): { subject: string; body: string } {
+  const opener = pick([
+    "Here is our availability over the next few days:",
+    "Below are the times we currently have open:",
+    "Here is what we have available:",
+  ]);
+  const dayBlocks = o.days
+    .map((d) => {
+      const header = `${d.weekday}, ${prettyDate(d.date).split(", ").pop()}`;
+      const lines = d.slots.map((s) => `    • ${prettySlot(s)}`).join("\n");
+      return `  ${header}\n${lines}`;
+    })
+    .join("\n\n");
+  const closer = pick([
+    "Please let us know which time works best and we will confirm your booking.",
+    "Reply with your preferred time and we will get it scheduled.",
+    "Let us know which suits you and we will reserve it.",
+  ]);
+  const body = [
+    greeting(o.firstName),
+    opener,
+    dayBlocks,
+    closer,
+    signoff(),
+  ].join("\n\n");
+  return { subject: "Available times — Glow Cleaning", body };
 }
 
 export function bookingConfirmation(o: {
@@ -159,16 +199,14 @@ export function bookingConfirmation(o: {
   duration: number;
 }): { subject: string; body: string } {
   const opener = pick([
-    "You're all set — we're looking forward to it!",
-    "All booked — we can't wait to get your place sparkling!",
-    "You're confirmed — looking forward to it!",
-    "Great news — you're booked in!",
+    "Your booking has been confirmed. Here are the details:",
+    "Your appointment is confirmed — details below.",
+    "We have confirmed your booking. Please review the details below.",
   ]);
   const closer = pick([
-    "Anything you'd like us to know before we arrive? Just hit reply.",
-    "If anything changes, just reply to this email.",
-    "Any special instructions? Just reply and let us know.",
-    "Need to tweak anything? Just reply and we'll sort it.",
+    "If you have any special instructions or need to make changes, please reply to this email.",
+    "Should anything change, please reply and we will update your booking.",
+    "Please reply if you have any questions or need to adjust anything.",
   ]);
   const body = [
     greeting(o.firstName),
@@ -186,16 +224,14 @@ export function missingInfoEmail(o: {
   voice?: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    "Happy to help!",
-    "Glad to get this going for you!",
-    "Let's get you booked in!",
-    "Happy to sort this out for you!",
+    "Thank you for your inquiry.",
+    "We would be happy to help.",
+    "Thank you for reaching out.",
   ]);
   const askIntro = pick([
-    "Just one quick thing first:",
-    "I just need one quick detail:",
-    "Could you help me with one thing:",
-    "One small thing and you're set:",
+    "To proceed, we need the following:",
+    "Before we can book, could you provide:",
+    "We just need a couple of details:",
   ]);
   const human: Record<string, string> = {
     address: "the service address",
@@ -208,10 +244,10 @@ export function missingInfoEmail(o: {
   const body = [
     greeting(o.firstName),
     opener,
-    `${askIntro} could you send me ${asks}? Once I have that I'll get you booked.`,
+    `${askIntro} ${asks}. Once we have that, we can proceed with your booking.`,
     signoff(),
   ].join("\n\n");
-  return { subject: "Quick question before I book you in", body };
+  return { subject: "A couple of details needed to complete your booking", body };
 }
 
 export function rescheduleConfirmation(o: {
@@ -222,16 +258,14 @@ export function rescheduleConfirmation(o: {
   end: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    `No problem at all — you're now set for ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
-    `Done! You're now booked for ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
-    `All sorted — your new time is ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
-    `Easy — you're rescheduled to ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
+    `Your appointment has been rescheduled to ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
+    `We have updated your booking to ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
+    `Your new time is confirmed: ${prettyDate(o.newDate)}, ${prettyTime(o.start)}–${prettyTime(o.end)}.`,
   ]);
   const closer = pick([
-    "Anything else you need, just say the word.",
-    "Let me know if anything else comes up.",
-    "If this changes again, just reply.",
-    "See you then!",
+    "If you need any further changes, please reply to this email.",
+    "Please do not hesitate to reach out if anything else needs adjusting.",
+    "Should you need to make additional changes, simply reply.",
   ]);
   const body = [
     greeting(o.firstName),
@@ -248,16 +282,14 @@ export function cancellationConfirmation(o: {
   date: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    "All done —",
-    "No problem —",
-    "Done —",
-    "Taken care of —",
+    "This is to confirm that",
+    "We have processed your request —",
+    "Your cancellation has been confirmed —",
   ]);
   const closer = pick([
-    "We'd love to have you back whenever the timing's right — just reply and we'll sort it out.",
-    "Whenever you're ready to rebook, just reply.",
-    "Hope to see you again soon — reach out anytime.",
-    "The door's always open — reply whenever you'd like to rebook.",
+    "We would be glad to assist you whenever you are ready to rebook — simply reply to this email.",
+    "Whenever you would like to reschedule, please reply and we will arrange it.",
+    "We look forward to working with you again. Please reply any time to rebook.",
   ]);
   const body = [
     greeting(o.firstName),
@@ -277,10 +309,9 @@ export function reminderEmail(o: {
   noticeHours: number;
 }): { subject: string; body: string } {
   const opener = pick([
-    "Just a friendly heads-up that we'll see you soon!",
-    "Quick reminder — we're on for your cleaning soon!",
-    "Looking forward to seeing you soon!",
-    "Just popping in with a friendly reminder.",
+    "This is a reminder about your upcoming appointment.",
+    "A friendly reminder that your cleaning is coming up.",
+    "We wanted to confirm the details of your upcoming appointment.",
   ]);
   const body = [
     greeting(o.firstName),
@@ -298,14 +329,14 @@ export function waitlistOpening(o: {
   date: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    "Good news — a spot just opened up!",
-    "Great news — a spot has opened up!",
-    "You're in luck — a spot just freed up!",
+    "An opening has become available.",
+    "A time slot has opened up.",
+    "We have availability that may interest you.",
   ]);
   const closer = pick([
-    "Reply and I'll hold it for you — first come, first served, so let me know soon.",
-    "Want it? Just reply and it's yours — first come, first served.",
-    "Reply to grab it — it's first come, first served, so don't wait too long.",
+    "If you would like to book this slot, please reply at your earliest convenience — availability is on a first-come, first-served basis.",
+    "Please reply if you would like us to reserve this for you. Availability is first come, first served.",
+    "Let us know if this works for you and we will confirm the booking. First come, first served.",
   ]);
   const body = [
     greeting(o.firstName),
@@ -323,12 +354,12 @@ export function cancellationFeeNotice(o: {
   feeLine: string;
 }): { subject: string; body: string } {
   const opener = pick([
-    `Thanks for letting us know about your ${o.serviceName} on ${prettyDate(o.date)}.`,
-    `Thanks for the heads-up about your ${o.serviceName} on ${prettyDate(o.date)}.`,
+    `Thank you for letting us know about your ${o.serviceName} on ${prettyDate(o.date)}.`,
+    `We have received your cancellation request for your ${o.serviceName} on ${prettyDate(o.date)}.`,
   ]);
   const closer = pick([
-    "Someone from our team will reach out shortly.",
-    "Someone from our team will be in touch shortly.",
+    "A member of our team will follow up with you shortly.",
+    "Someone from our team will be in touch shortly to discuss next steps.",
   ]);
   const body = [
     greeting(o.firstName),
