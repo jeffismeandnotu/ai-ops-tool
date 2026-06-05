@@ -9,24 +9,24 @@ export const BUSINESS = {
   // --- Company ---
   name: "Glow Cleaning Services",
   tagline: "Professional Cleaning Services — Whistler & Sea to Sky",
-  website: "https://www.glowcleaningservices.ca",
+  website: "",
   timezone: "America/Vancouver",
   currency: "CAD",
   locale: "en-CA",
-  phone: "604-902-0399",
+  phone: "",
 
   // --- People ---
   owner: {
     name: "Micky",
     email: "aryanraman777@gmail.com",
-    phone: "604-902-0399",
+    phone: "",
     role: "owner" as const,
   },
 
   // Administrator (AI role)
   administrator: {
     name: "Glow Cleaning Administrator",
-    signOff: "Glow Cleaning Services\n604-902-0399\nglowcleaningservices.ca",
+    signOff: "Glow Cleaning Services",
   },
 
   employees: [
@@ -147,7 +147,7 @@ Total: \${{price}} CAD
 
 Your cleaning team will arrive on time. Please ensure access to the property.
 
-If you need to make any changes, just reply to this email or call us at 604-902-0399.
+If you need to make any changes, just reply to this email.
 
 {{signOff}}`,
     },
@@ -189,7 +189,7 @@ Please confirm by replying.
 
 Your {{service}} on {{date}} at {{time}} has been cancelled.
 
-If you'd like to rebook, just reply to this email or call us at 604-902-0399.
+If you'd like to rebook, just reply to this email.
 
 {{signOff}}`,
     },
@@ -281,7 +281,7 @@ When you receive an email:
 
 EMAIL SIGNING:
 - NEVER sign emails with a person's name
-- ALWAYS sign as: "Glow Cleaning Services" followed by the phone number and website
+- ALWAYS sign as: "Glow Cleaning Services" (business name only)
 - You are the business, not a person
 
 TIME SLOT RULES:
