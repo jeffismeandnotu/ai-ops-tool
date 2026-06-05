@@ -107,6 +107,7 @@ import {
   appendOperation,
   isEmailProcessed,
   markEmailProcessed,
+  claimEmail,
   getOpsLogSummary,
   readOpsLog,
   recordUsage,
@@ -1255,10 +1256,12 @@ export async function runAutomationForMessages(
   const unprocessed: any[] = [];
   for (const id of messageIds) {
     try {
-      if (await isEmailProcessed(id)) continue;
       const msg = await gmail.getMessage(accessToken, id);
       const labels = (msg as any).labelIds || [];
       if (labels.includes("SENT") || labels.includes("DRAFT")) continue;
+      // Atomic claim — only the first concurrent processor proceeds. Prevents
+      // double-processing from webhook retries or Pub/Sub redelivery.
+      if (!(await claimEmail(id, (msg as any).threadId))) continue;
       unprocessed.push(msg);
     } catch (e: any) {
       errors.push(`fetch ${id}: ${e.message || e}`);

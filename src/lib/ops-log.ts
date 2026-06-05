@@ -112,7 +112,22 @@ export async function markEmailProcessed(entry: {
   const sql = getDb();
   await sql`INSERT INTO ai_processed_emails (message_id, thread_id, classification, action_taken)
     VALUES (${entry.messageId}, ${entry.threadId || ''}, ${entry.classification}, ${entry.actionTaken})
-    ON CONFLICT (message_id) DO NOTHING`;
+    ON CONFLICT (message_id) DO UPDATE SET
+      classification = EXCLUDED.classification,
+      action_taken = EXCLUDED.action_taken`;
+}
+
+// Atomically claim a message for processing. Returns true only for the FIRST
+// caller; concurrent/duplicate deliveries get false and must skip. This makes
+// processing exactly-once even if the webhook is retried or Pub/Sub redelivers.
+export async function claimEmail(messageId: string, threadId?: string): Promise<boolean> {
+  await ensureTables();
+  const sql = getDb();
+  const rows = await sql`INSERT INTO ai_processed_emails (message_id, thread_id, classification, action_taken)
+    VALUES (${messageId}, ${threadId || ''}, 'PENDING', 'claimed')
+    ON CONFLICT (message_id) DO NOTHING
+    RETURNING message_id`;
+  return rows.length > 0;
 }
 
 export async function isEmailProcessed(messageId: string): Promise<boolean> {
