@@ -178,6 +178,8 @@ export async function getRecentOperations(hours = 24): Promise<Operation[]> {
 // ============================================================
 const MODEL_PRICING: Record<string, { in: number; out: number }> = {
   // per million tokens (input / output)
+  "claude-haiku-4-5": { in: 1, out: 5 },
+  "claude-sonnet-4-6": { in: 3, out: 15 },
   "claude-sonnet-4-5": { in: 3, out: 15 },
   "claude-3-5-haiku": { in: 0.8, out: 4 },
   "gemini-2.5-flash-lite": { in: 0.1, out: 0.4 },
@@ -185,10 +187,22 @@ const MODEL_PRICING: Record<string, { in: number; out: number }> = {
   "gemini-3-flash": { in: 0.5, out: 3 },
 };
 
-export function estimateCost(model: string, inTok: number, outTok: number): number {
+// Cache reads bill at ~0.1x input; cache writes at ~1.25x input (Anthropic).
+export function estimateCost(
+  model: string,
+  inTok: number,
+  outTok: number,
+  cacheReadTok = 0,
+  cacheCreateTok = 0
+): number {
   const key = Object.keys(MODEL_PRICING).find((k) => (model || "").includes(k));
   const p = key ? MODEL_PRICING[key] : { in: 0, out: 0 };
-  return (inTok / 1e6) * p.in + (outTok / 1e6) * p.out;
+  return (
+    (inTok / 1e6) * p.in +
+    (cacheReadTok / 1e6) * p.in * 0.1 +
+    (cacheCreateTok / 1e6) * p.in * 1.25 +
+    (outTok / 1e6) * p.out
+  );
 }
 
 let _usageInit = false;
@@ -214,11 +228,21 @@ export async function recordUsage(o: {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  freshInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }): Promise<void> {
   try {
     await ensureUsageTable();
     const sql = getDb();
-    const cost = estimateCost(o.model, o.inputTokens, o.outputTokens);
+    const fresh = o.freshInputTokens ?? o.inputTokens;
+    const cost = estimateCost(
+      o.model,
+      fresh,
+      o.outputTokens,
+      o.cacheReadTokens || 0,
+      o.cacheCreationTokens || 0
+    );
     const id = `use_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await sql`INSERT INTO ai_usage (id, model, context, calls, input_tokens, output_tokens, cost_usd)
       VALUES (${id}, ${o.model}, ${o.context || null}, ${o.calls}, ${o.inputTokens}, ${o.outputTokens}, ${cost})`;

@@ -1003,6 +1003,87 @@ async function executeTool(
 
 // --- Shared agent loop (OpenAI-compatible: Gemini / DeepSeek / etc.) ---
 // Runs the read→act→verify tool loop, records usage, appends to `actions`.
+// Native Anthropic loop WITH prompt caching (cache_control on system + tools).
+// Caching is a cost/latency optimization only — model input is identical, so
+// output quality and reliability are unchanged.
+async function runAnthropicLoop(
+  systemPrompt: string,
+  userMessage: string,
+  accessToken: string,
+  actions: string[],
+  context: string
+): Promise<void> {
+  const ctx = { repliedTo: new Set<string>() };
+  const tools = AUTOMATION_TOOLS.map((t, idx) =>
+    idx === AUTOMATION_TOOLS.length - 1 ? ({ ...t, cache_control: { type: "ephemeral" } } as any) : t
+  );
+  const system: any = [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }];
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: userMessage }];
+  let calls = 0, fresh = 0, cacheRead = 0, cacheCreate = 0, out = 0;
+
+  try {
+    for (let i = 0; i < 40; i++) {
+      let resp: Anthropic.Message;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          resp = await client.messages.create({
+            model: AI_MODEL,
+            max_tokens: 4096,
+            temperature: 0,
+            system,
+            tools: tools as any,
+            messages,
+          });
+          break;
+        } catch (e: any) {
+          const status = e?.status;
+          const blob = `${e?.message || ""} ${JSON.stringify(e?.error || "")}`;
+          const billing = /credit|billing|balance|quota/i.test(blob);
+          if ((status === 429 || status === 529) && !billing && attempt < 3) {
+            await new Promise((r) => setTimeout(r, 5000 * (attempt + 1)));
+            continue;
+          }
+          throw e;
+        }
+      }
+      calls++;
+      const u: any = resp.usage || {};
+      fresh += u.input_tokens || 0;
+      out += u.output_tokens || 0;
+      cacheRead += u.cache_read_input_tokens || 0;
+      cacheCreate += u.cache_creation_input_tokens || 0;
+
+      const toolUse = resp.content.filter((b) => b.type === "tool_use");
+      const texts = resp.content.filter((b) => b.type === "text").map((b) => (b as any).text);
+      if (texts.length) actions.push(...texts);
+
+      if (toolUse.length === 0 || resp.stop_reason === "end_turn") break;
+
+      messages.push({ role: "assistant", content: resp.content });
+      const toolResults: any[] = [];
+      for (const tu of toolUse) {
+        const t = tu as any;
+        const result = await executeTool(t.name, t.input, accessToken, ctx);
+        toolResults.push({ type: "tool_result", tool_use_id: t.id, content: result });
+        actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
+      }
+      toolResults.push({ type: "text", text: RULE_CHECK });
+      messages.push({ role: "user", content: toolResults });
+    }
+  } finally {
+    await recordUsage({
+      model: AI_MODEL,
+      context,
+      calls,
+      inputTokens: fresh + cacheRead + cacheCreate,
+      outputTokens: out,
+      freshInputTokens: fresh,
+      cacheReadTokens: cacheRead,
+      cacheCreationTokens: cacheCreate,
+    });
+  }
+}
+
 async function runAgentLoop(
   systemPrompt: string,
   userMessage: string,
@@ -1010,6 +1091,9 @@ async function runAgentLoop(
   actions: string[],
   context: string
 ): Promise<void> {
+  if ((process.env.AI_PROVIDER || "").toLowerCase() === "anthropic") {
+    return runAnthropicLoop(systemPrompt, userMessage, accessToken, actions, context);
+  }
   const ctx = { repliedTo: new Set<string>() };
   const tools = toOpenAITools(AUTOMATION_TOOLS as any);
   const messages: any[] = [
