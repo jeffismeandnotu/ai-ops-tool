@@ -25,6 +25,17 @@ export interface Client {
   postal_code: string | null;
   notes: string | null;
   source: string | null;
+  property_type: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  pets: string | null;
+  parking: string | null;
+  access_notes: string | null;
+  service_interest: string | null;
+  recurring: string | null;
+  preferred_times: string | null;
+  special_instructions: string | null;
+  last_contact_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -154,6 +165,18 @@ async function ensureClientTables() {
   await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS source_message_id TEXT`;
   await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_email TEXT`;
   await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE`;
+
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS property_type TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS bedrooms INT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS bathrooms INT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS pets TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS parking TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS access_notes TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS service_interest TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS recurring TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS preferred_times TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS special_instructions TEXT`;
+  await sql`ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_contact_at TIMESTAMPTZ`;
 
   _tablesReady = true;
 }
@@ -532,4 +555,155 @@ export async function deleteFutureBookingsForEmail(email: string): Promise<numbe
     WHERE LOWER(customer_email) = LOWER(${email})
     OR client_id IN (SELECT id FROM clients WHERE LOWER(email) = LOWER(${email}))`;
   return rows.length;
+}
+
+// ============================================================
+// CLIENT PROFILE — consolidated golden record
+// ============================================================
+
+export interface ClientProfile {
+  client: Client;
+  openInquiry: { id: string; type: string; status: string; requested_service_id: string | null } | null;
+  latestQuote: { id: string; service_id: string; service_name: string; price: number; status: string } | null;
+  activePhase: { thread_id: string; phase: number } | null;
+  recentBookings: Booking[];
+  totalSpent: number;
+  bookingCount: number;
+}
+
+export async function getClientProfile(email: string): Promise<ClientProfile | null> {
+  await ensureClientTables();
+  const sql = getDb();
+
+  const clientRows = await sql`SELECT * FROM clients WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
+  if (!clientRows.length) return null;
+  const client = clientRows[0] as unknown as Client;
+
+  const inqRows = await sql`SELECT id, type, status, requested_service_id FROM inquiries
+    WHERE client_id = ${client.id} AND status NOT IN ('closed','escalated')
+    ORDER BY created_at DESC LIMIT 1`;
+  const openInquiry = inqRows.length ? (inqRows[0] as any) : null;
+
+  const qtRows = await sql`SELECT id, service_id, service_name, price, status FROM quotes
+    WHERE client_id = ${client.id} ORDER BY created_at DESC LIMIT 1`;
+  const latestQuote = qtRows.length ? (qtRows[0] as any) : null;
+
+  const phRows = await sql`SELECT thread_id, phase FROM booking_phases
+    WHERE thread_id IN (SELECT thread_id FROM inquiries WHERE client_id = ${client.id})
+    AND phase < 3 ORDER BY created_at DESC LIMIT 1`;
+  const activePhase = phRows.length ? { thread_id: phRows[0].thread_id as string, phase: Number(phRows[0].phase) } : null;
+
+  const bookingRows = await sql`SELECT * FROM bookings WHERE client_id = ${client.id} ORDER BY date DESC LIMIT 5`;
+  const stats = await sql`SELECT COUNT(*) as cnt, COALESCE(SUM(price), 0) as total FROM bookings WHERE client_id = ${client.id} AND status != 'cancelled'`;
+
+  return {
+    client,
+    openInquiry,
+    latestQuote,
+    activePhase,
+    recentBookings: bookingRows as unknown as Booking[],
+    totalSpent: Number(stats[0]?.total || 0),
+    bookingCount: Number(stats[0]?.cnt || 0),
+  };
+}
+
+const GATE_CODE_PATTERN = /\b(gate|door|lock|entry|access)\s*(code|pin|key|password)\s*[:=]?\s*\S+/i;
+
+export async function mergeUpsertClient(
+  email: string,
+  fields: {
+    name?: string;
+    firstName?: string;
+    lastName?: string;
+    phone?: string;
+    address?: string;
+    city?: string;
+    postalCode?: string;
+    propertyType?: string;
+    bedrooms?: number;
+    bathrooms?: number;
+    pets?: string;
+    parking?: string;
+    accessNotes?: string;
+    serviceInterest?: string;
+    recurring?: string;
+    preferredTimes?: string;
+    specialInstructions?: string;
+  }
+): Promise<Client> {
+  await ensureClientTables();
+  const sql = getDb();
+
+  // Scrub gate/lock codes from access_notes
+  let safeAccessNotes = fields.accessNotes || null;
+  if (safeAccessNotes && GATE_CODE_PATTERN.test(safeAccessNotes)) {
+    safeAccessNotes = "has gate/door code — see thread";
+  }
+
+  const existing = await sql`SELECT * FROM clients WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
+
+  if (existing.length > 0) {
+    const old = existing[0] as unknown as Client;
+
+    // Address history: if new address differs, append old to notes
+    let notesAppend: string | null = null;
+    if (fields.address && fields.address.trim() && old.address && old.address.trim()
+        && fields.address.trim().toLowerCase() !== old.address.trim().toLowerCase()) {
+      notesAppend = `Previous address (${new Date().toISOString().slice(0, 10)}): ${old.address}`;
+    }
+
+    await sql`UPDATE clients SET
+      name = COALESCE(NULLIF(${fields.name || ""}, ''), name),
+      first_name = COALESCE(NULLIF(${fields.firstName || ""}, ''), first_name),
+      last_name = COALESCE(NULLIF(${fields.lastName || ""}, ''), last_name),
+      phone = COALESCE(NULLIF(${fields.phone || ""}, ''), phone),
+      address = COALESCE(NULLIF(${fields.address || ""}, ''), address),
+      city = COALESCE(NULLIF(${fields.city || ""}, ''), city),
+      postal_code = COALESCE(NULLIF(${fields.postalCode || ""}, ''), postal_code),
+      property_type = COALESCE(NULLIF(${fields.propertyType || ""}, ''), property_type),
+      bedrooms = COALESCE(${fields.bedrooms ?? null}, bedrooms),
+      bathrooms = COALESCE(${fields.bathrooms ?? null}, bathrooms),
+      pets = COALESCE(NULLIF(${fields.pets || ""}, ''), pets),
+      parking = COALESCE(NULLIF(${fields.parking || ""}, ''), parking),
+      access_notes = COALESCE(NULLIF(${safeAccessNotes || ""}, ''), access_notes),
+      service_interest = COALESCE(NULLIF(${fields.serviceInterest || ""}, ''), service_interest),
+      recurring = COALESCE(NULLIF(${fields.recurring || ""}, ''), recurring),
+      preferred_times = COALESCE(NULLIF(${fields.preferredTimes || ""}, ''), preferred_times),
+      special_instructions = COALESCE(NULLIF(${fields.specialInstructions || ""}, ''), special_instructions),
+      notes = CASE WHEN ${notesAppend} IS NOT NULL
+        THEN COALESCE(notes || E'\n', '') || ${notesAppend || ""}
+        ELSE notes END,
+      last_contact_at = NOW(),
+      updated_at = NOW()
+      WHERE id = ${old.id}`;
+
+    const refreshed = await sql`SELECT * FROM clients WHERE id = ${old.id}`;
+    return refreshed[0] as unknown as Client;
+  }
+
+  // New client
+  const id = genId("cli");
+  const name = fields.name || [fields.firstName, fields.lastName].filter(Boolean).join(" ") || email.split("@")[0];
+
+  await sql`INSERT INTO clients (id, email, name, first_name, last_name, phone, address, city, postal_code,
+    property_type, bedrooms, bathrooms, pets, parking, access_notes, service_interest, recurring, preferred_times, special_instructions,
+    source, last_contact_at)
+    VALUES (${id}, ${email}, ${name}, ${fields.firstName || null}, ${fields.lastName || null}, ${fields.phone || null},
+    ${fields.address || null}, ${fields.city || null}, ${fields.postalCode || null},
+    ${fields.propertyType || null}, ${fields.bedrooms ?? null}, ${fields.bathrooms ?? null},
+    ${fields.pets || null}, ${fields.parking || null}, ${safeAccessNotes}, ${fields.serviceInterest || null},
+    ${fields.recurring || null}, ${fields.preferredTimes || null}, ${fields.specialInstructions || null},
+    'email', NOW())`;
+
+  const created = await sql`SELECT * FROM clients WHERE id = ${id}`;
+  return created[0] as unknown as Client;
+}
+
+export async function findClientByNameAndPhone(name: string, phone: string): Promise<Client | null> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM clients
+    WHERE LOWER(name) = LOWER(${name}) AND phone = ${phone}
+    LIMIT 1`;
+  return rows.length ? (rows[0] as unknown as Client) : null;
 }
