@@ -168,11 +168,23 @@ export async function cancelGuarded(
   accessToken: string,
   bookingId: string,
   reason?: string
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<{ ok: boolean; reason?: string; feeApplies?: boolean; hoursUntil?: number; booking?: any }> {
   const sql = getDb();
   const rows = await sql`SELECT * FROM bookings WHERE id = ${bookingId} LIMIT 1`;
   if (!rows.length) return { ok: false, reason: `Booking ${bookingId} not found` };
   const b = rows[0] as any;
+
+  // Notice-window policy: within N hours of the appointment, the AI does NOT
+  // cancel — a fee applies and the owner handles it.
+  const apptDate = String(b.date).slice(0, 10);
+  const apptTime = String(b.time).slice(0, 5);
+  const appt = new Date(`${apptDate}T${apptTime}:00`);
+  const hoursUntil = (appt.getTime() - Date.now()) / 3_600_000;
+  const noticeHours = BUSINESS.cancellation?.noticeHours ?? 24;
+  if (hoursUntil < noticeHours) {
+    return { ok: false, feeApplies: true, hoursUntil, booking: b };
+  }
+
   await sql`UPDATE bookings SET status = 'cancelled', cancel_reason = ${reason || null}, updated_at = NOW() WHERE id = ${bookingId}`;
   if (b.calendar_event_id) {
     try {
@@ -181,5 +193,5 @@ export async function cancelGuarded(
       console.error("calendar cancel mirror failed:", e?.message || e);
     }
   }
-  return { ok: true };
+  return { ok: true, booking: b };
 }

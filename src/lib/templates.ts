@@ -120,6 +120,22 @@ export function cancellationConfirmation(o: {
   return { subject: `Cancelled — ${o.serviceName} on ${o.date}`, body };
 }
 
+export function cancellationFeeNotice(o: {
+  firstName?: string;
+  serviceName: string;
+  date: string;
+  feeLine: string;
+}): { subject: string; body: string } {
+  const greeting = o.firstName ? `Hi ${o.firstName},` : "Hi,";
+  const body = [
+    greeting,
+    `Thanks for letting me know about your ${o.serviceName} on ${o.date}.`,
+    o.feeLine,
+    SIGNOFF,
+  ].join("\n\n");
+  return { subject: `Cancellation request — ${o.serviceName} on ${o.date}`, body };
+}
+
 // ============================================================
 // PRE-SEND VALIDATOR — the fact backstop
 // ============================================================

@@ -116,7 +116,7 @@ import * as clientsDb from "@/lib/clients-db";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
-import { validateOutboundFacts, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation } from "@/lib/templates";
+import { validateOutboundFacts, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice } from "@/lib/templates";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -187,6 +187,13 @@ Send booking_confirmation with compose_and_send, using the bookingId from Stage 
 
 STAGE 5 — CALENDAR:
 The Google Calendar event is created as part of Stage 3 (atomic with the booking, so the two can never disagree). If create_booking reported a calendar error, notify the owner.
+
+=== CANCELLATIONS & RESCHEDULES ===
+First find the booking with get_client_history (by the customer's email) to get its bookingId.
+- RESCHEDULE: call reschedule_booking with bookingId + the new date/time. If it returns alternatives (the new slot is taken), offer those and ask the customer to pick. On success, send compose_and_send (template "reschedule", bookingId).
+- CANCEL: call cancel_booking with the bookingId. The system enforces the 24-hour notice policy for you — never decide it yourself:
+  • returns success → the booking is cancelled; send compose_and_send (template "cancellation", bookingId).
+  • returns feeApplies:true → do NOT cancel. Send compose_and_send (template "cancellation_fee_notice", bookingId) to tell the customer a fee applies, and notify the owner with send_email. Leave the booking in place.
 
 === WORK IN A READ → ACT → VERIFY CYCLE ===
 The MANDATORY RULES are always present in your instructions above — they are in front of you every step, so you do NOT need to call read_rules each turn (use it only if you are genuinely unsure of a detail). Operate like this:
@@ -331,7 +338,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
       properties: {
         template: {
           type: "string",
-          enum: ["quote", "booking_confirmation", "missing_info", "reschedule", "cancellation"],
+          enum: ["quote", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice"],
         },
         to: { type: "array", items: { type: "string" } },
         cc: { type: "array", items: { type: "string" } },
@@ -453,30 +460,30 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
-    name: "update_booking",
-    description: "Update an existing calendar event.",
+    name: "reschedule_booking",
+    description:
+      "Reschedule an existing booking to a new date/time, by bookingId (get it from get_client_history). Revalidates the new slot is free, updates the database AND Google Calendar together, and frees the old slot. Returns the new times, or {success:false, alternatives} if the new slot is taken.",
     input_schema: {
       type: "object" as const,
       properties: {
-        eventId: { type: "string" },
-        summary: { type: "string" },
-        startTime: { type: "string" },
-        endTime: { type: "string" },
-        location: { type: "string" },
-        description: { type: "string" },
+        bookingId: { type: "string" },
+        newDate: { type: "string", description: "YYYY-MM-DD" },
+        newStartTime: { type: "string", description: "HH:MM (24h)" },
       },
-      required: ["eventId"],
+      required: ["bookingId", "newDate", "newStartTime"],
     },
   },
   {
     name: "cancel_booking",
-    description: "Cancel/delete a calendar event.",
+    description:
+      "Cancel an existing booking by bookingId (get it from get_client_history). Enforces the cancellation notice policy: if the appointment is more than the notice window away, it cancels (frees the slot + removes the calendar event). If it is WITHIN the notice window, it does NOT cancel and returns {feeApplies:true} — in that case inform the customer a fee applies (compose_and_send template 'cancellation_fee_notice') and notify the owner; do not cancel.",
     input_schema: {
       type: "object" as const,
       properties: {
-        eventId: { type: "string" },
+        bookingId: { type: "string" },
+        reason: { type: "string" },
       },
-      required: ["eventId"],
+      required: ["bookingId"],
     },
   },
   // --- Ops Log Tools (AI's persistent memory) ---
@@ -751,6 +758,15 @@ async function executeTool(
             serviceName: b.service_name,
             date: String(b.date).slice(0, 10),
           });
+        } else if (t === "cancellation_fee_notice") {
+          const b = await clientsDb.getBookingById(input.bookingId);
+          if (!b) return JSON.stringify({ success: false, error: `Booking '${input.bookingId}' not found` });
+          built = cancellationFeeNotice({
+            firstName: input.firstName,
+            serviceName: b.service_name,
+            date: String(b.date).slice(0, 10),
+            feeLine: BUSINESS.cancellation.feeLine,
+          });
         } else {
           return JSON.stringify({ success: false, error: `Unknown template '${t}'` });
         }
@@ -906,31 +922,43 @@ async function executeTool(
         });
         return JSON.stringify({ success: true, bookingId: r.bookingId, calendarEventId: r.calendarEventId, service: r.service, date: input.date, start: r.start, end: r.end });
       }
-      case "update_booking": {
-        const updated = await calendar.updateEvent(accessToken, input.eventId, {
-          summary: input.summary,
-          startTime: input.startTime,
-          endTime: input.endTime,
-          location: input.location,
-          description: input.description,
-        });
+      case "reschedule_booking": {
+        const r = await bookingService.rescheduleGuarded(accessToken, input.bookingId, input.newDate, input.newStartTime);
+        if (!r.ok) {
+          return JSON.stringify({ success: false, reason: r.reason, alternatives: r.alternatives || [] });
+        }
         await appendOperation({
           type: "booking_updated",
-          calendarEventId: input.eventId,
-          details: `Updated booking: ${input.eventId}`,
+          details: `Rescheduled ${input.bookingId} to ${input.newDate} ${r.start}-${r.end}`,
           verified: true,
         });
-        return JSON.stringify({ success: true, eventId: updated.id });
+        return JSON.stringify({ success: true, bookingId: input.bookingId, newDate: input.newDate, start: r.start, end: r.end });
       }
       case "cancel_booking": {
-        await calendar.deleteEvent(accessToken, input.eventId);
+        const r = await bookingService.cancelGuarded(accessToken, input.bookingId, input.reason);
+        if (r.feeApplies) {
+          await appendOperation({
+            type: "booking_cancelled",
+            details: `Cancellation within notice window for ${input.bookingId} (~${Math.round(r.hoursUntil || 0)}h before) — fee applies, NOT cancelled. Inform customer + owner.`,
+            verified: true,
+          });
+          return JSON.stringify({
+            success: false,
+            feeApplies: true,
+            notCancelled: true,
+            hoursUntil: Math.round(r.hoursUntil || 0),
+            reason: "Within the cancellation notice window. Do NOT cancel. Send the customer template 'cancellation_fee_notice' and notify the owner. Leave the booking in place.",
+          });
+        }
+        if (!r.ok) {
+          return JSON.stringify({ success: false, reason: r.reason });
+        }
         await appendOperation({
           type: "booking_cancelled",
-          calendarEventId: input.eventId,
-          details: `Cancelled booking: ${input.eventId}`,
+          details: `Cancelled ${input.bookingId}`,
           verified: true,
         });
-        return JSON.stringify({ success: true });
+        return JSON.stringify({ success: true, bookingId: input.bookingId });
       }
       case "log_operation": {
         const op = await appendOperation({

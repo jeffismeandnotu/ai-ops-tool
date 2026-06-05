@@ -230,6 +230,16 @@ Price: \${{price}} CAD
     },
   },
 
+  // --- Cancellation policy ---
+  cancellation: {
+    // Free cancellation/reschedule allowed via AI up to this many hours before.
+    noticeHours: 24,
+    // Within the notice window the AI does NOT cancel; it informs the customer
+    // a fee applies and leaves it for the owner to handle.
+    feeLine:
+      "Since this is within 24 hours of your appointment, our cancellation policy means a cancellation fee applies. I've flagged this to our owner, who will follow up with you about the details.",
+  },
+
   // --- Calendar Settings ---
   calendar: {
     bufferMinutes: 30,
