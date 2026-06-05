@@ -2,8 +2,10 @@ import { neon } from "@neondatabase/serverless";
 import { BUSINESS } from "@/config/business";
 import { requireService } from "@/lib/catalog";
 import { isSlotFree, getAvailability } from "@/lib/availability";
-import { createBooking } from "@/lib/clients-db";
+import { createBooking, updateBookingFields, getRemindableBookings, markReminderSent } from "@/lib/clients-db";
 import * as calendar from "@/lib/calendar";
+import { reminderEmail } from "@/lib/templates";
+import { sendEmail } from "@/lib/gmail";
 
 // Convert a wall-clock date+time in a named IANA timezone to a UTC epoch (ms),
 // DST-correct. e.g. ("2026-06-05","08:00","America/Vancouver") -> the ms for 15:00Z.
@@ -210,4 +212,68 @@ export async function cancelGuarded(
     }
   }
   return { ok: true, booking: b };
+}
+
+// ============================================================
+// POST-BOOKING UPDATE — change editable details (address/notes)
+// ============================================================
+export async function updateBookingDetails(
+  accessToken: string,
+  bookingId: string,
+  fields: { address?: string; notes?: string }
+): Promise<{ ok: boolean; booking?: any; reason?: string }> {
+  const b = await updateBookingFields(bookingId, fields);
+  if (!b) return { ok: false, reason: `Booking ${bookingId} not found` };
+  // Mirror to the calendar event (location/description).
+  if ((b as any).calendar_event_id) {
+    try {
+      await calendar.updateEvent(accessToken, (b as any).calendar_event_id, {
+        location: (b as any).address,
+        description: (b as any).notes || undefined,
+      });
+    } catch (e: any) {
+      console.error("calendar update mirror failed:", e?.message || e);
+    }
+  }
+  return { ok: true, booking: b };
+}
+
+// ============================================================
+// REMINDERS — send a one-time reminder for upcoming bookings
+// ============================================================
+// Sends to confirmed, not-yet-reminded bookings within 48h, so the
+// client still has room to cancel/reschedule before the notice cutoff.
+export async function sendDueReminders(
+  accessToken: string
+): Promise<{ checked: number; sent: number; details: string[] }> {
+  const candidates = await getRemindableBookings();
+  const now = Date.now();
+  const notice = BUSINESS.cancellation?.noticeHours ?? 24;
+  let sent = 0;
+  const details: string[] = [];
+  for (const b of candidates) {
+    const date = String((b as any).date).slice(0, 10);
+    const time = String((b as any).time).slice(0, 5);
+    const apptUtc = zonedWallClockToUtcMs(date, time, BUSINESS.timezone);
+    const hoursUntil = (apptUtc - now) / 3_600_000;
+    if (hoursUntil <= 0 || hoursUntil > 48) continue;
+    const first = ((b as any).client_name || "").split(/\s+/)[0] || undefined;
+    const mail = reminderEmail({
+      firstName: first,
+      serviceName: (b as any).service_name,
+      date,
+      start: time,
+      address: (b as any).address,
+      noticeHours: notice,
+    });
+    try {
+      await sendEmail(accessToken, [(b as any).client_email], mail.subject, mail.body);
+      await markReminderSent((b as any).id);
+      sent++;
+      details.push(`${(b as any).id} -> ${(b as any).client_email} (${Math.round(hoursUntil)}h)`);
+    } catch (e: any) {
+      details.push(`${(b as any).id} FAILED: ${e?.message || e}`);
+    }
+  }
+  return { checked: candidates.length, sent, details };
 }

@@ -120,6 +120,40 @@ export function cancellationConfirmation(o: {
   return { subject: `Cancelled — ${o.serviceName} on ${o.date}`, body };
 }
 
+export function reminderEmail(o: {
+  firstName?: string;
+  serviceName: string;
+  date: string;
+  start: string;
+  address: string;
+  noticeHours: number;
+}): { subject: string; body: string } {
+  const greeting = o.firstName ? `Hi ${o.firstName},` : "Hi,";
+  const body = [
+    greeting,
+    `A quick reminder of your upcoming ${o.serviceName}:`,
+    `  • Date: ${o.date}\n  • Time: ${o.start}\n  • Address: ${o.address}`,
+    `If you need to reschedule or cancel, please reply to this email at least ${o.noticeHours} hours before — changes within ${o.noticeHours} hours may be subject to a fee.`,
+    SIGNOFF,
+  ].join("\n\n");
+  return { subject: `Reminder — ${o.serviceName} on ${o.date}`, body };
+}
+
+export function waitlistOpening(o: {
+  firstName?: string;
+  serviceName: string;
+  date: string;
+}): { subject: string; body: string } {
+  const greeting = o.firstName ? `Hi ${o.firstName},` : "Hi,";
+  const body = [
+    greeting,
+    `Good news — a spot has opened up for a ${o.serviceName} on ${o.date}, which you'd asked about.`,
+    "Reply to this email and I'll hold it for you. It's first come, first served, so let me know soon if you'd like it.",
+    SIGNOFF,
+  ].join("\n\n");
+  return { subject: `A spot opened up — ${o.serviceName} on ${o.date}`, body };
+}
+
 export function cancellationFeeNotice(o: {
   firstName?: string;
   serviceName: string;

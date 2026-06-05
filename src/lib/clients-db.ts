@@ -153,6 +153,7 @@ async function ensureClientTables() {
   )`;
   await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS source_message_id TEXT`;
   await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_email TEXT`;
+  await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE`;
 
   _tablesReady = true;
 }
@@ -480,6 +481,43 @@ export async function getBookingById(bookingId: string): Promise<Booking | null>
   const sql = getDb();
   const rows = await sql`SELECT * FROM bookings WHERE id = ${bookingId} LIMIT 1`;
   return rows.length ? (rows[0] as unknown as Booking) : null;
+}
+
+// Confirmed, not-yet-reminded bookings in the next few days (reminder cron).
+export async function getRemindableBookings(): Promise<
+  Array<Booking & { client_email: string; client_name: string }>
+> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT b.*, c.email AS client_email, c.name AS client_name
+    FROM bookings b JOIN clients c ON c.id = b.client_id
+    WHERE b.status = 'confirmed'
+    AND COALESCE(b.reminder_sent, false) = false
+    AND b.date >= CURRENT_DATE
+    AND b.date <= CURRENT_DATE + INTERVAL '3 days'`;
+  return rows as any;
+}
+
+export async function markReminderSent(bookingId: string): Promise<void> {
+  await ensureClientTables();
+  const sql = getDb();
+  await sql`UPDATE bookings SET reminder_sent = true, updated_at = NOW() WHERE id = ${bookingId}`;
+}
+
+// Update editable booking fields (post-booking change). Returns the updated row.
+export async function updateBookingFields(
+  bookingId: string,
+  fields: { address?: string; notes?: string }
+): Promise<Booking | null> {
+  await ensureClientTables();
+  const sql = getDb();
+  if (typeof fields.address === "string") {
+    await sql`UPDATE bookings SET address = ${fields.address}, updated_at = NOW() WHERE id = ${bookingId}`;
+  }
+  if (typeof fields.notes === "string") {
+    await sql`UPDATE bookings SET notes = ${fields.notes}, updated_at = NOW() WHERE id = ${bookingId}`;
+  }
+  return getBookingById(bookingId);
 }
 
 // Delete a client's future bookings AND quotes (test cleanup). Returns count removed.

@@ -118,7 +118,9 @@ import { getPhase, setPhase } from "@/lib/booking-phases";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
-import { validateOutboundFacts, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice } from "@/lib/templates";
+import { validateOutboundFacts, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
+import { recordClassification, scanRisk } from "@/lib/triage";
+import * as waitlist from "@/lib/waitlist";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -156,6 +158,14 @@ async function buildAutomationPrompt(): Promise<string> {
 
   return `You are the autonomous email operations AI for ${BUSINESS.name}. You process inbound emails automatically — no human is reading your replies before they go out.
 
+=== STEP 0: CLASSIFY EVERY EMAIL FIRST ===
+Before anything else, call classify_email(threadId, intent, confidence, risk) and follow the routing it returns.
+- intents: general_inquiry, booking_request, booking_confirmation, missing_info, reschedule, cancellation, complaint, contract, negotiation, payment, out_of_scope, human_requested, post_booking_change, ambiguous.
+- risk = high if the email involves money/refunds, legal/disputes, anger/complaints, or asks for a human. If RISK FLAGS are shown on the email, risk is high.
+- ESCALATION (complaint, payment, human_requested, ambiguous, any high risk, or low confidence): never auto-resolve. Send ONE brief empathetic holding acknowledgement (no promises, no money, no booking actions), call notify_owner with a full summary, mark_email_done, stop.
+- out_of_scope (spam, solicitation, wrong recipient): take no action — just mark_email_done (at most one short redirect line). Never start a booking.
+- MULTIPLE INTENTS in one email: handle the highest-priority one — escalation beats everything; otherwise cancellation/reschedule before new bookings. Cover it in your single reply; escalate the rest via notify_owner.
+
 === HARD RULES (always) ===
 - Facts come from tools, never from you. Price/duration: list_services or get_service (use the exact catalog price). Times: get_availability (only offer slots it returns). Never invent a price or time — outbound is blocked if you do.
 - ONE customer email per inbound message. Always send it with compose_and_send (templates: quote | booking_confirmation | missing_info | reschedule | cancellation | cancellation_fee_notice) — the template writes the body, you just pass the data. After that one reply, call mark_email_done and stop.
@@ -167,7 +177,7 @@ async function buildAutomationPrompt(): Promise<string> {
 Every booking conversation moves through phase 1 -> 2 -> 3. A phase must be marked complete before the next begins. ALWAYS call get_phase(threadId) FIRST and do only the current phase's work.
 
 PHASE 1 — TALK:
-Be helpful and informative. Work out which service they want (get_service / list_services for the price, get_availability for real free times) and answer their questions. Then ask if they'd like to go ahead: send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Pull get_availability immediately before quoting and pass its exact slot labels verbatim — the send is blocked if any offered time isn't actually free. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
+Be helpful and informative. Work out which service they want (get_service / list_services for the price, get_availability for real free times) and answer their questions. Then ask if they'd like to go ahead: send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Pull get_availability immediately before quoting and pass its exact slot labels verbatim — the send is blocked if any offered time isn't actually free. If the day they want has NO free slots, offer the waitlist (add_to_waitlist) instead of inventing a time. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
 
 PHASE 2 — CONFIRM (only once the client replies accepting a time):
 Read their confirmation. Call get_required_booking_fields and check you have every one: client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3.
@@ -176,9 +186,10 @@ PHASE 3 — BOOK:
 find_or_create_client to get clientId, then create_booking with { clientConfirmed:true, confirmationEvidence:(their words), threadId, clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }. It re-checks the slot, applies the catalog price, writes the database AND Google Calendar atomically, and marks phase 3. Then send compose_and_send template "booking_confirmation" with the bookingId — it goes to the client AND the owner automatically. Done.
 If create_booking returns alternatives (slot taken), offer those exact times and wait for the client to pick.
 
-=== CANCEL / RESCHEDULE ===
+=== CANCEL / RESCHEDULE / CHANGES ===
 Find the booking with get_client_history (by the client's email) to get the bookingId.
 - RESCHEDULE: reschedule_booking(bookingId, newDate, newStartTime). If it returns alternatives, offer them. On success send template "reschedule".
+- CHANGE DETAILS (address, notes/special instructions — not the time): update_booking(bookingId, address?, notes?), then reply confirming the change. To change the service itself, treat it as a new booking or escalate.
 - CANCEL: cancel_booking(bookingId). Never judge the 24-hour rule yourself:
   • success -> send template "cancellation".
   • feeApplies:true -> do NOT cancel; send template "cancellation_fee_notice" and notify_owner. The booking stays in place.
@@ -214,6 +225,52 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     description:
       "Return the exact service catalog (id, name, price, duration, description). ALWAYS use this to get prices — never state a price that did not come from here.",
     input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "classify_email",
+    description:
+      "FIRST step for every email. Record your classification of this email. intent ∈ {general_inquiry, booking_request, booking_confirmation, missing_info, reschedule, cancellation, complaint, contract, negotiation, payment, out_of_scope, human_requested, post_booking_change, ambiguous}. confidence 0–1. risk ∈ {low, high} (high = money/legal/anger/explicit human request). Returns routing guidance — follow it. If it tells you to escalate, send only a brief holding acknowledgement and notify_owner, then stop.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        threadId: { type: "string" },
+        intent: { type: "string" },
+        confidence: { type: "number" },
+        risk: { type: "string", enum: ["low", "high"] },
+        reason: { type: "string" },
+      },
+      required: ["threadId", "intent", "confidence", "risk"],
+    },
+  },
+  {
+    name: "add_to_waitlist",
+    description:
+      "Add a client to the waitlist for a date when that day has no free slot. Offer this in Phase 1 instead of inventing a time. When a booking on that date is later cancelled, the earliest waitlisted client is automatically offered the opening.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        clientEmail: { type: "string" },
+        clientName: { type: "string" },
+        serviceId: { type: "string" },
+        date: { type: "string", description: "YYYY-MM-DD" },
+        threadId: { type: "string" },
+      },
+      required: ["clientEmail", "serviceId", "date"],
+    },
+  },
+  {
+    name: "update_booking",
+    description:
+      "Change editable details of an existing booking (service address or notes/special instructions) without moving the time. Get the bookingId from get_client_history. For a time change use reschedule_booking instead; to change the service, treat it as a new booking or escalate.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        bookingId: { type: "string" },
+        address: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["bookingId"],
+    },
   },
   {
     name: "get_phase",
@@ -649,6 +706,72 @@ async function executeTool(
       case "list_services": {
         return JSON.stringify(catalog.listServices(), null, 2);
       }
+      case "classify_email": {
+        const intent = String(input.intent || "ambiguous");
+        const confidence = Number(input.confidence ?? 0);
+        const risk = String(input.risk || "low");
+        await recordClassification({
+          messageId: ctx.messageId,
+          threadId: input.threadId,
+          intent,
+          confidence,
+          risk,
+          reason: input.reason,
+        });
+        const mustEscalate =
+          risk === "high" ||
+          confidence < 0.6 ||
+          ["complaint", "payment", "human_requested", "ambiguous"].includes(intent);
+        if (mustEscalate) {
+          return JSON.stringify({
+            recorded: true,
+            escalate: true,
+            route:
+              "ESCALATE. Do NOT take any booking/cancel/quote action. Send the customer ONE brief, empathetic holding acknowledgement (no promises, no money, no commitments) via send_email, call notify_owner with a full summary of the situation, then mark_email_done and stop.",
+          });
+        }
+        const guide: Record<string, string> = {
+          general_inquiry: "Answer their question helpfully using get_service/get_availability, then invite them to book (Phase 1).",
+          booking_request: "Booking flow — call get_phase(threadId) and do the current phase.",
+          booking_confirmation: "Booking flow — call get_phase(threadId); if at phase 1, verify fields, mark phase 2, and book.",
+          missing_info: "Send compose_and_send template 'missing_info' for the unknown field; stay in the current phase.",
+          reschedule: "get_client_history → reschedule_booking; send template 'reschedule'. Reschedules are free.",
+          cancellation: "get_client_history → cancel_booking. Let the tool decide the 24h policy; never decide it yourself.",
+          contract: "Quote the standard catalog price AND include the contract line, then notify_owner to set the contract rate. Never invent a rate.",
+          negotiation: "Hold the catalog price politely. Escalate any rate question via notify_owner. Never improvise a discount.",
+          out_of_scope: "Not business-relevant. Take NO action — just mark_email_done. At most send one short redirect line. Do NOT start a booking.",
+          post_booking_change: "get_client_history → update_booking for address/notes, or reschedule_booking for a time change. Escalate service changes.",
+        };
+        return JSON.stringify({ recorded: true, escalate: false, route: guide[intent] || guide.general_inquiry });
+      }
+      case "add_to_waitlist": {
+        const wl = await waitlist.addToWaitlist({
+          clientEmail: input.clientEmail,
+          clientName: input.clientName,
+          serviceId: input.serviceId,
+          date: input.date,
+          threadId: input.threadId,
+        });
+        await appendOperation({
+          type: "email_received",
+          details: `Waitlisted ${input.clientEmail} for ${input.serviceId} on ${input.date}`,
+          verified: true,
+        });
+        return JSON.stringify({ ok: true, id: wl.id, note: "Tell the client they're on the waitlist for that day and you'll reach out the moment a spot opens. Do not promise a specific time." });
+      }
+      case "update_booking": {
+        const r = await bookingService.updateBookingDetails(accessToken, input.bookingId, {
+          address: input.address,
+          notes: input.notes,
+        });
+        if (!r.ok) return JSON.stringify({ success: false, reason: r.reason });
+        await appendOperation({
+          type: "booking_created",
+          details: `Updated booking ${input.bookingId}${input.address ? ` address` : ""}${input.notes ? ` notes` : ""}`,
+          verified: true,
+        });
+        return JSON.stringify({ success: true, booking: r.booking, note: "Reply to the client (send_email) confirming the updated detail. One reply only." });
+      }
       case "get_phase": {
         const st = await getPhase(input.threadId || "");
         const guide: Record<number, string> = {
@@ -1069,7 +1192,32 @@ async function executeTool(
           details: `Cancelled ${input.bookingId}`,
           verified: true,
         });
-        return JSON.stringify({ success: true, bookingId: input.bookingId });
+        // Waitlist recovery — the cancelled date now has an opening.
+        let waitlistOffered: string | null = null;
+        try {
+          const freedDate = String((r.booking as any)?.date || "").slice(0, 10);
+          const svcName = (r.booking as any)?.service_name || "cleaning";
+          if (freedDate) {
+            const next = await waitlist.nextWaitlistForDate(freedDate);
+            if (next) {
+              const first = (next.client_name || "").split(/\s+/)[0] || undefined;
+              const mail = waitlistOpening({ firstName: first, serviceName: svcName, date: freedDate });
+              await gmail.sendEmail(accessToken, [next.client_email], mail.subject, mail.body);
+              await waitlist.markNotified(next.id);
+              waitlistOffered = next.client_email;
+              await appendOperation({
+                type: "email_sent",
+                to: [next.client_email],
+                subject: mail.subject,
+                details: `[waitlist_offer] opening on ${freedDate} offered to ${next.client_email}`,
+                verified: true,
+              });
+            }
+          }
+        } catch (e: any) {
+          /* waitlist offer is best-effort */
+        }
+        return JSON.stringify({ success: true, bookingId: input.bookingId, waitlistOffered });
       }
       case "log_operation": {
         const op = await appendOperation({
@@ -1383,14 +1531,14 @@ export async function runAutomationCycle(accessToken: string): Promise<{
   To: ${e.to}
   Subject: ${e.subject}
   Date: ${e.date}
-  Body: ${e.body?.slice(0, 1000) || e.snippet}
+  Body: ${e.body?.slice(0, 1000) || e.snippet}${(() => { const rk = scanRisk(e.body || e.snippet || ""); return rk.high ? `\n  RISK FLAGS: ${rk.flags.join(", ")} — classify accordingly and ESCALATE (holding ack + notify_owner).` : ""; })()}
 
 IMPORTANT: When replying to this email, use threadId="${e.threadId}" and replyToMessageId="${(e as any).messageId || ""}" in your send_email call to keep the conversation in the same thread.`
       )
       .join("\n\n---\n\n");
 
     const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
-1. Classify it (booking, inquiry, reschedule, cancellation, or complaint).
+1. Call classify_email FIRST (intent, confidence, risk) using the "Thread" value as threadId, and follow the routing it returns. If it says ESCALATE, send one brief holding acknowledgement + notify_owner, then stop.
 2. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
 3. Send exactly one customer reply, then mark_email_done.
 
@@ -1464,14 +1612,14 @@ export async function runAutomationForMessages(
   To: ${e.to}
   Subject: ${e.subject}
   Date: ${e.date}
-  Body: ${e.body?.slice(0, 1000) || e.snippet}
+  Body: ${e.body?.slice(0, 1000) || e.snippet}${(() => { const rk = scanRisk(e.body || e.snippet || ""); return rk.high ? `\n  RISK FLAGS: ${rk.flags.join(", ")} — classify accordingly and ESCALATE (holding ack + notify_owner).` : ""; })()}
 
 IMPORTANT: When replying, use threadId="${e.threadId}" and replyToMessageId="${e.messageId || ""}" to stay in the same thread.`
     )
     .join("\n\n---\n\n");
 
   const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
-1. Classify it (booking, inquiry, reschedule, cancellation, or complaint).
+1. Call classify_email FIRST (intent, confidence, risk) using the "Thread" value as threadId, and follow the routing it returns. If it says ESCALATE, send one brief holding acknowledgement + notify_owner, then stop.
 2. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
 3. Send exactly one customer reply, then mark_email_done.
 

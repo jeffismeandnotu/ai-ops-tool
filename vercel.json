@@ -4,6 +4,10 @@
     {
       "path": "/api/gmail/watch?secret=${CRON_SECRET}",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/reminders?secret=${CRON_SECRET}",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
