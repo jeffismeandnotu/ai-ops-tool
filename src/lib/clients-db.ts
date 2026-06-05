@@ -449,3 +449,11 @@ export async function getBookingsOnDate(date: string): Promise<Booking[]> {
   const rows = await sql`SELECT * FROM bookings WHERE date = ${date} AND status != 'cancelled' ORDER BY time`;
   return rows as unknown as Booking[];
 }
+
+// Fetch one booking by id (for building confirmations from source of truth).
+export async function getBookingById(bookingId: string): Promise<Booking | null> {
+  await ensureClientTables();
+  const sql = getDb();
+  const rows = await sql`SELECT * FROM bookings WHERE id = ${bookingId} LIMIT 1`;
+  return rows.length ? (rows[0] as unknown as Booking) : null;
+}

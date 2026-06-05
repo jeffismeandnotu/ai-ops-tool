@@ -22,14 +22,20 @@ export function quoteEmail(o: {
   price: number;
   description: string;
   slots: { label: string }[];
+  offerContract?: boolean;
   voice?: string;
 }): { subject: string; body: string } {
   const greeting = o.firstName ? `Hi ${o.firstName},` : "Hi,";
   const slotLines = o.slots.slice(0, 3).map((s) => `  • ${s.label}`).join("\n");
+  const contract =
+    o.offerContract && BUSINESS.pricing?.contract?.enabled
+      ? BUSINESS.pricing.contract.line
+      : "";
   const body = [
     greeting,
     o.voice?.trim() || "",
     `For a ${o.serviceName}, the price is ${fmtMoney(o.price)}. That covers ${o.description}`,
+    contract,
     o.slots.length ? `I can fit you in at one of these times:\n${slotLines}` : "",
     "Just reply with what works and I'll lock it in.",
     SIGNOFF,

@@ -113,7 +113,7 @@ import * as clientsDb from "@/lib/clients-db";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
-import { validateOutboundFacts } from "@/lib/templates";
+import { validateOutboundFacts, quoteEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation } from "@/lib/templates";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -169,6 +169,7 @@ You must NEVER state a price, duration, or time slot from your own judgement. Ev
 - AVAILABILITY: Call get_availability(date, service_id). You may ONLY offer times it returns. Never propose a time you did not get from this tool. It reads the bookings database (the source of truth), not the calendar.
 - BOOKING: First find_or_create_client to get clientId. Then call create_booking with { clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }. It re-checks the slot, applies the catalog price, and writes both the database and the calendar. If it returns success:false with alternatives, offer those exact alternatives. If a required field is missing, ask for it — do NOT guess. Do NOT call create_booking_record afterwards.
 - RECORD-KEEPING: Call create_inquiry once for every business email (pass threadId, gmailMessageId, clientId, type, summary). After you send a quote, call create_quote with the serviceId (price is taken from the catalog automatically).
+- SENDING: Send every customer-facing email with compose_and_send (template = quote | booking_confirmation | missing_info | reschedule | cancellation). You do NOT write the body — the template fills it from source-of-truth data. For a quote, pass serviceId, slots (labels from get_availability only), and offerContract:true if the request signals recurring/commercial work. For confirmations/reschedule/cancellation, pass the bookingId. Use plain send_email ONLY for internal notes to the owner, never for customer quotes or confirmations.
 - If any tool returns an error or success:false, surface it / ask the customer — never proceed as if it succeeded, and never fabricate a confirmation.
 
 === CONTRACT / VOLUME PRICING (a defined feature — use it, don't improvise it) ===
@@ -279,6 +280,34 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         serviceId: { type: "string" },
       },
       required: ["serviceId"],
+    },
+  },
+  {
+    name: "compose_and_send",
+    description:
+      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Use this for quotes, booking confirmations, missing-info requests, reschedules, and cancellations. (Plain send_email is for internal/owner notes only.)",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        template: {
+          type: "string",
+          enum: ["quote", "booking_confirmation", "missing_info", "reschedule", "cancellation"],
+        },
+        to: { type: "array", items: { type: "string" } },
+        cc: { type: "array", items: { type: "string" } },
+        threadId: { type: "string" },
+        replyToMessageId: { type: "string" },
+        firstName: { type: "string" },
+        // quote
+        serviceId: { type: "string", description: "for quote: which service" },
+        slots: { type: "array", items: { type: "string" }, description: "for quote: labels from get_availability only" },
+        offerContract: { type: "boolean", description: "for quote: true if the request signals recurring/commercial work" },
+        // booking_confirmation / reschedule / cancellation
+        bookingId: { type: "string", description: "for booking_confirmation/reschedule/cancellation: the booking id" },
+        // missing_info
+        missing: { type: "array", items: { type: "string" }, description: "for missing_info: which fields are missing" },
+      },
+      required: ["template", "to"],
     },
   },
   {
@@ -607,6 +636,85 @@ async function executeTool(
           price: svc.price,
         });
         return JSON.stringify({ success: true, quoteId: q.id, price: svc.price });
+      }
+      case "compose_and_send": {
+        const t = input.template;
+        const endStr = (time: string, duration: number) => {
+          const [h, m] = String(time).slice(0, 5).split(":").map(Number);
+          const em = h * 60 + (m || 0) + Number(duration);
+          return `${String(Math.floor(em / 60)).padStart(2, "0")}:${String(em % 60).padStart(2, "0")}`;
+        };
+        let built: { subject: string; body: string };
+        let allowedPrices: number[] = [];
+
+        if (t === "quote") {
+          const svc = catalog.getService(input.serviceId);
+          if (!svc) return JSON.stringify({ success: false, error: `Unknown service_id '${input.serviceId}'` });
+          built = quoteEmail({
+            firstName: input.firstName,
+            serviceName: svc.name,
+            price: svc.price,
+            description: svc.description,
+            slots: (input.slots || []).map((s: string) => ({ label: s })),
+            offerContract: !!input.offerContract,
+          });
+          allowedPrices = [svc.price];
+        } else if (t === "booking_confirmation") {
+          const b = await clientsDb.getBookingById(input.bookingId);
+          if (!b) return JSON.stringify({ success: false, error: `Booking '${input.bookingId}' not found` });
+          built = bookingConfirmation({
+            firstName: input.firstName,
+            serviceName: b.service_name,
+            date: String(b.date).slice(0, 10),
+            start: String(b.time).slice(0, 5),
+            end: endStr(b.time, b.duration),
+            address: b.address,
+            cleaner: b.employee_name || undefined,
+            price: Number(b.price),
+            duration: b.duration,
+          });
+          allowedPrices = [Number(b.price)];
+        } else if (t === "missing_info") {
+          built = missingInfoEmail({ firstName: input.firstName, missing: input.missing || [] });
+        } else if (t === "reschedule") {
+          const b = await clientsDb.getBookingById(input.bookingId);
+          if (!b) return JSON.stringify({ success: false, error: `Booking '${input.bookingId}' not found` });
+          built = rescheduleConfirmation({
+            firstName: input.firstName,
+            serviceName: b.service_name,
+            newDate: String(b.date).slice(0, 10),
+            start: String(b.time).slice(0, 5),
+            end: endStr(b.time, b.duration),
+          });
+        } else if (t === "cancellation") {
+          const b = await clientsDb.getBookingById(input.bookingId);
+          if (!b) return JSON.stringify({ success: false, error: `Booking '${input.bookingId}' not found` });
+          built = cancellationConfirmation({
+            firstName: input.firstName,
+            serviceName: b.service_name,
+            date: String(b.date).slice(0, 10),
+          });
+        } else {
+          return JSON.stringify({ success: false, error: `Unknown template '${t}'` });
+        }
+
+        const check = validateOutboundFacts(
+          built.body,
+          allowedPrices.length ? allowedPrices : catalog.listServices().map((s) => s.price)
+        );
+        if (!check.ok) {
+          return JSON.stringify({ success: false, blocked: true, error: check.violations.join("; ") });
+        }
+        const sent = await gmail.sendEmail(accessToken, input.to, built.subject, built.body, input.cc, input.replyToMessageId, input.threadId);
+        await appendOperation({
+          type: "email_sent",
+          to: input.to,
+          subject: built.subject,
+          threadId: input.threadId,
+          details: `[${t}] ${built.subject}`,
+          verified: true,
+        });
+        return JSON.stringify({ success: true, messageId: sent.id, threadId: sent.threadId, subject: built.subject });
       }
       case "search_emails": {
         const threads = await gmail.searchEmails(accessToken, input.query, input.maxResults || 10);
