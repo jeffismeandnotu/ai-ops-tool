@@ -126,6 +126,15 @@ import * as path from "path";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
+function normalizeDate(d: any): string {
+  if (d instanceof Date) return d.toISOString().slice(0, 10);
+  const s = String(d || "");
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return s.slice(0, 10);
+}
+
 // Load rules file
 function loadRules(): string {
   try {
@@ -917,7 +926,7 @@ async function executeTool(
           built = bookingConfirmation({
             firstName: input.firstName,
             serviceName: b.service_name,
-            date: String(b.date).slice(0, 10),
+            date: normalizeDate(b.date),
             start: String(b.time).slice(0, 5),
             end: endStr(b.time, b.duration),
             address: b.address,
@@ -934,7 +943,7 @@ async function executeTool(
           built = rescheduleConfirmation({
             firstName: input.firstName,
             serviceName: b.service_name,
-            newDate: String(b.date).slice(0, 10),
+            newDate: normalizeDate(b.date),
             start: String(b.time).slice(0, 5),
             end: endStr(b.time, b.duration),
           });
@@ -944,7 +953,7 @@ async function executeTool(
           built = cancellationConfirmation({
             firstName: input.firstName,
             serviceName: b.service_name,
-            date: String(b.date).slice(0, 10),
+            date: normalizeDate(b.date),
           });
         } else if (t === "cancellation_fee_notice") {
           const b = await clientsDb.getBookingById(input.bookingId);
@@ -952,7 +961,7 @@ async function executeTool(
           built = cancellationFeeNotice({
             firstName: input.firstName,
             serviceName: b.service_name,
-            date: String(b.date).slice(0, 10),
+            date: normalizeDate(b.date),
             feeLine: BUSINESS.cancellation.feeLine,
           });
         } else {
@@ -1195,7 +1204,7 @@ async function executeTool(
         // Waitlist recovery — the cancelled date now has an opening.
         let waitlistOffered: string | null = null;
         try {
-          const freedDate = String((r.booking as any)?.date || "").slice(0, 10);
+          const freedDate = normalizeDate((r.booking as any)?.date);
           const svcName = (r.booking as any)?.service_name || "cleaning";
           if (freedDate) {
             const next = await waitlist.nextWaitlistForDate(freedDate);

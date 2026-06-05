@@ -36,6 +36,15 @@ function getDb() {
   return neon(process.env.DATABASE_URL!);
 }
 
+function normalizeDate(d: any): string {
+  if (d instanceof Date) return d.toISOString().slice(0, 10);
+  const s = String(d || "");
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return s.slice(0, 10);
+}
+
 function toMin(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + (m || 0);
@@ -194,7 +203,7 @@ export async function cancelGuarded(
 
   // Notice-window policy: within N hours of the appointment, the AI does NOT
   // cancel — a fee applies and the owner handles it.
-  const apptDate = String(b.date).slice(0, 10);
+  const apptDate = normalizeDate(b.date);
   const apptTime = String(b.time).slice(0, 5);
   const appt = new Date(zonedWallClockToUtcMs(apptDate, apptTime, BUSINESS.timezone));
   const hoursUntil = (appt.getTime() - Date.now()) / 3_600_000;
@@ -252,7 +261,7 @@ export async function sendDueReminders(
   let sent = 0;
   const details: string[] = [];
   for (const b of candidates) {
-    const date = String((b as any).date).slice(0, 10);
+    const date = normalizeDate((b as any).date);
     const time = String((b as any).time).slice(0, 5);
     const apptUtc = zonedWallClockToUtcMs(date, time, BUSINESS.timezone);
     const hoursUntil = (apptUtc - now) / 3_600_000;
