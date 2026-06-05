@@ -482,7 +482,7 @@ export async function getBookingById(bookingId: string): Promise<Booking | null>
   return rows.length ? (rows[0] as unknown as Booking) : null;
 }
 
-// Delete a client's future bookings (test cleanup). Returns count removed.
+// Delete a client's future bookings AND quotes (test cleanup). Returns count removed.
 export async function deleteFutureBookingsForEmail(email: string): Promise<number> {
   await ensureClientTables();
   const sql = getDb();
@@ -490,5 +490,8 @@ export async function deleteFutureBookingsForEmail(email: string): Promise<numbe
     WHERE date >= CURRENT_DATE
     AND client_id IN (SELECT id FROM clients WHERE LOWER(email) = LOWER(${email}))
     RETURNING id`;
+  await sql`DELETE FROM quotes
+    WHERE LOWER(customer_email) = LOWER(${email})
+    OR client_id IN (SELECT id FROM clients WHERE LOWER(email) = LOWER(${email}))`;
   return rows.length;
 }
