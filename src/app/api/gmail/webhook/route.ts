@@ -6,6 +6,7 @@ import {
   getWatchState,
   saveWatchState,
 } from "@/lib/google-auth";
+import { getAutomationEnabled } from "@/lib/app-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,15 @@ export async function POST(req: NextRequest) {
     );
     emailAddress = decoded.emailAddress;
     const notificationHistoryId = String(decoded.historyId);
+
+    // 2b. Global Start/Stop switch (dashboard). If processing is OFF,
+    //     advance the cursor so we don't reprocess a backlog when it's
+    //     turned back on, then skip without touching the inbox.
+    const enabled = await getAutomationEnabled();
+    if (!enabled) {
+      await saveWatchState(emailAddress, notificationHistoryId);
+      return NextResponse.json({ ok: true, note: "automation stopped" });
+    }
 
     // 3. Fresh access token from the stored refresh token.
     const accessToken = await getFreshAccessToken(emailAddress);

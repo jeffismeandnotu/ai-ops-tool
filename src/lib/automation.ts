@@ -113,6 +113,7 @@ import {
   recordUsage,
 } from "@/lib/ops-log";
 import * as clientsDb from "@/lib/clients-db";
+import { getAutomationEnabled } from "@/lib/app-settings";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
@@ -1031,7 +1032,7 @@ async function executeTool(
             feeApplies: true,
             hoursUntil: Math.round(r.hoursUntil || 0),
             instruction:
-              "This is NOT an error. The appointment is within the 24h notice window, so the booking was deliberately left ACTIVE (not cancelled). Do exactly two things and nothing else: (1) compose_and_send to the customer with template 'cancellation_fee_notice' and this bookingId — tell them a fee applies and the owner will follow up; do NOT tell them it is cancelled. (2) notify_owner about the same-day cancellation request. Do not call cancel_booking again.",
+              "This is NOT an error. The appointment is within the 24h notice window, so the booking was deliberately left ACTIVE (not cancelled). Do exactly two things and nothing else: (1) Send the customer the fee notice — you MUST use compose_and_send with template 'cancellation_fee_notice' and this bookingId. Do NOT use send_email and do NOT write your own wording; the template is the exact approved message. Do not tell them it is cancelled. (2) notify_owner about the same-day cancellation request. Do not call cancel_booking again.",
           });
         }
         if (!r.ok) {
@@ -1315,6 +1316,11 @@ export async function runAutomationCycle(accessToken: string): Promise<{
 }> {
   const actions: string[] = [];
   const errors: string[] = [];
+
+  // Respect the dashboard Start/Stop switch.
+  if (!(await getAutomationEnabled())) {
+    return { processed: 0, actions: ["automation stopped"], errors: [] };
+  }
 
   appendOperation({
     type: "email_received",

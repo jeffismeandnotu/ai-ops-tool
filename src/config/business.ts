@@ -237,7 +237,7 @@ Price: \${{price}} CAD
     // Within the notice window the AI does NOT cancel; it informs the customer
     // a fee applies and leaves it for the owner to handle.
     feeLine:
-      "Since this is within 24 hours of your appointment, our cancellation policy means a cancellation fee applies. I've flagged this to our owner, who will follow up with you about the details.",
+      "Since this is within 24 hours of your appointment, our cancellation policy means a cancellation fee may apply. Someone from the organization or our team will contact you shortly to confirm the details.",
   },
 
   // --- Calendar Settings ---

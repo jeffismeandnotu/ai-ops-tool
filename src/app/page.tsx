@@ -18,6 +18,8 @@ export default function Home() {
   const [autoRunning, setAutoRunning] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
+  const [toggling, setToggling] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -26,6 +28,19 @@ export default function Home() {
   }, [messages]);
 
   useEffect(() => { if (session) checkToken(); }, [session]);
+  useEffect(() => { if (session) loadAutoStatus(); }, [session]);
+
+  const loadAutoStatus = async () => { try { const r = await fetch("/api/automation"); const d = await r.json(); setAutoEnabled(!!d.enabled); } catch {} };
+  const toggleAuto = async () => {
+    if (toggling || autoEnabled === null) return;
+    setToggling(true);
+    try {
+      const next = !autoEnabled;
+      const r = await fetch("/api/automation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: next }) });
+      const d = await r.json();
+      setAutoEnabled(!!d.enabled);
+    } catch {} finally { setToggling(false); }
+  };
 
   const checkToken = async () => { try { const r = await fetch("/api/auth/token"); const d = await r.json(); setTokenSaved(d.hasToken); } catch {} };
   const saveToken = async () => { await fetch("/api/auth/token", { method: "POST" }); setTokenSaved(true); };
@@ -88,9 +103,22 @@ export default function Home() {
           </div>
           <span className="text-[15px] font-semibold" style={{ color: "var(--text-primary)" }}>Glow Cleaning</span>
         </div>
-        <button onClick={() => setShowMenu(!showMenu)} className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: showMenu ? "var(--bg-elevated)" : "transparent" }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="19" r="1.5" /></svg>
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={toggleAuto} disabled={toggling || autoEnabled === null}
+            className="flex items-center gap-1.5 pl-2.5 pr-3 py-1.5 rounded-full text-[12px] font-semibold transition-all active:scale-[0.97]"
+            style={{
+              background: autoEnabled ? "var(--accent)" : "var(--bg-elevated)",
+              color: autoEnabled ? "#fff" : "var(--text-secondary)",
+              border: autoEnabled ? "none" : "1px solid var(--border)",
+              opacity: toggling || autoEnabled === null ? 0.6 : 1,
+            }}>
+            <span className="w-2 h-2 rounded-full" style={{ background: autoEnabled ? "#fff" : "var(--text-muted)" }} />
+            {autoEnabled === null ? "…" : autoEnabled ? "Running · Stop" : "Stopped · Start"}
+          </button>
+          <button onClick={() => setShowMenu(!showMenu)} className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: showMenu ? "var(--bg-elevated)" : "transparent" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="19" r="1.5" /></svg>
+          </button>
+        </div>
       </header>
 
       {/* Menu */}
