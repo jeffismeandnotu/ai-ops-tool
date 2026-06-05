@@ -614,8 +614,15 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
 async function executeTool(
   toolName: string,
   input: any,
-  accessToken: string
+  accessToken: string,
+  ctx: { repliedTo: Set<string> } = { repliedTo: new Set() }
 ): Promise<string> {
+  const ownerEmail = BUSINESS.owner.email.toLowerCase();
+  const employeeEmails = new Set(BUSINESS.employees.map((e) => (e.email || "").toLowerCase()).filter(Boolean));
+  const isCustomer = (a: string) => {
+    const x = (a || "").toLowerCase();
+    return x && x !== ownerEmail && !employeeEmails.has(x);
+  };
   try {
     switch (toolName) {
       case "read_rules": {
@@ -661,6 +668,10 @@ async function executeTool(
         return JSON.stringify({ success: true, quoteId: q.id, price: svc.price });
       }
       case "compose_and_send": {
+        const ccust = (input.to || []).filter(isCustomer);
+        if (ccust.some((a: string) => ctx.repliedTo.has(a.toLowerCase()))) {
+          return JSON.stringify({ success: false, blocked: true, error: "Already sent this customer their one reply this run. Do NOT send another email — record (create_inquiry/create_quote) and mark_email_done instead." });
+        }
         const t = input.template;
         const endStr = (time: string, duration: number) => {
           const [h, m] = String(time).slice(0, 5).split(":").map(Number);
@@ -729,6 +740,7 @@ async function executeTool(
           return JSON.stringify({ success: false, blocked: true, error: check.violations.join("; ") });
         }
         const sent = await gmail.sendEmail(accessToken, input.to, built.subject, built.body, input.cc, input.replyToMessageId, input.threadId);
+        ccust.forEach((a: string) => ctx.repliedTo.add(a.toLowerCase()));
         await appendOperation({
           type: "email_sent",
           to: input.to,
@@ -748,6 +760,10 @@ async function executeTool(
         return JSON.stringify(thread, null, 2);
       }
       case "send_email": {
+        const scust = (input.to || []).filter(isCustomer);
+        if (scust.some((a: string) => ctx.repliedTo.has(a.toLowerCase()))) {
+          return JSON.stringify({ success: false, blocked: true, error: "Already replied to this customer this run. Do not send another email — record and mark_email_done." });
+        }
         // Backstop: block any outbound whose dollar amounts aren't real catalog prices.
         const priceCheck = validateOutboundFacts(
           input.body || "",
@@ -761,6 +777,7 @@ async function executeTool(
           });
         }
         const sent = await gmail.sendEmail(accessToken, input.to, input.subject, input.body, input.cc, input.replyToMessageId, input.threadId);
+        scust.forEach((a: string) => ctx.repliedTo.add(a.toLowerCase()));
         await appendOperation({
           type: "email_sent",
           to: input.to,
@@ -1021,6 +1038,8 @@ ${emailSummaries}`;
       { role: "user", content: userMessage },
     ];
 
+    const ctx = { repliedTo: new Set<string>() };
+
     for (let i = 0; i < 40; i++) {
       const response = await client.messages.create({
         model: BUSINESS.ai.model,
@@ -1049,7 +1068,7 @@ ${emailSummaries}`;
       const toolResults: any[] = [];
       for (const tool of toolUseBlocks) {
         const t = tool as any;
-        const result = await executeTool(t.name, t.input, accessToken);
+        const result = await executeTool(t.name, t.input, accessToken, ctx);
         toolResults.push({
           type: "tool_result",
           tool_use_id: t.id,
@@ -1144,6 +1163,7 @@ ${emailSummaries}`;
   ];
 
   try {
+    const ctx = { repliedTo: new Set<string>() };
     for (let i = 0; i < 40; i++) {
       const response = await client.messages.create({
         model: BUSINESS.ai.model,
@@ -1166,7 +1186,7 @@ ${emailSummaries}`;
       const toolResults: any[] = [];
       for (const tool of toolUseBlocks) {
         const t = tool as any;
-        const result = await executeTool(t.name, t.input, accessToken);
+        const result = await executeTool(t.name, t.input, accessToken, ctx);
         toolResults.push({ type: "tool_result", tool_use_id: t.id, content: result });
         actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
       }
