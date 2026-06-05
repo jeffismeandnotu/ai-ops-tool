@@ -38,6 +38,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, reset: true, removedBookings: removed });
     }
 
+    // Optional: delete leftover test events (summary contains "Deep Clean") in next 30 days.
+    if (body.clearCalendar) {
+      const now = new Date();
+      const max = new Date(now.getTime() + 30 * 86_400_000);
+      const events = await calendar.listEvents(accessToken, now.toISOString(), max.toISOString());
+      let deleted = 0;
+      for (const e of events as any[]) {
+        if (e.id && /deep clean/i.test(e.summary || "")) {
+          try { await calendar.deleteEvent(accessToken, e.id); deleted++; } catch {}
+        }
+      }
+      return NextResponse.json({ ok: true, clearedCalendar: true, deleted });
+    }
+
     // Optional: snapshot the real Google Calendar (next 30 days).
     if (body.calendar) {
       const now = new Date();
