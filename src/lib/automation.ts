@@ -926,7 +926,10 @@ async function executeTool(
         return JSON.stringify({ marked: true });
       }
       case "check_already_processed": {
-        return JSON.stringify({ processed: await isEmailProcessed(input.messageId) });
+        // Deduplication is handled atomically at claim time (exactly-once),
+        // so the agent should always proceed. Never report a claimed-in-progress
+        // message as already done.
+        return JSON.stringify({ processed: false });
       }
       case "get_ops_summary": {
         return await getOpsLogSummary();
@@ -1209,8 +1212,7 @@ IMPORTANT: When replying to this email, use threadId="${e.threadId}" and replyTo
       .join("\n\n---\n\n");
 
     const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
-1. Call check_already_processed first
-2. If not processed: classify it, execute the workflow, log operations, mark done
+1. Classify it, then execute the correct workflow (see the staged BOOKING WORKFLOW for booking requests)
 3. If already processed: skip it
 
 EMAILS TO PROCESS:
@@ -1290,8 +1292,7 @@ IMPORTANT: When replying, use threadId="${e.threadId}" and replyToMessageId="${e
     .join("\n\n---\n\n");
 
   const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
-1. Call check_already_processed first
-2. If not processed: classify it, execute the workflow, log operations, mark done
+1. Classify it, then execute the correct workflow (see the staged BOOKING WORKFLOW for booking requests)
 3. If already processed: skip it
 
 EMAILS TO PROCESS:
