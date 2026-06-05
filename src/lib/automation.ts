@@ -108,6 +108,7 @@ import {
   markEmailProcessed,
   getOpsLogSummary,
   readOpsLog,
+  recordUsage,
 } from "@/lib/ops-log";
 import * as clientsDb from "@/lib/clients-db";
 import * as catalog from "@/lib/catalog";
@@ -131,7 +132,7 @@ function loadRules(): string {
 
 // Injected after every tool result to force the read -> act -> verify cycle.
 const RULE_CHECK =
-  "RULE CHECK — before your next action: re-read the MANDATORY RULES (call read_rules if you need the full text) and confirm the result above complies with every rule (correct price from the catalog, slot from get_availability, all required fields present, no discounts/negotiation outside the contract feature, complaints escalated, customer emails sent only via compose_and_send). If anything violated a rule, fix it now before doing anything else. Take ONE action at a time. IMPORTANT STOP CONDITION: send AT MOST ONE customer-facing email per inbound message — a booking gets exactly one booking_confirmation (never also a quote); an inquiry gets exactly one quote. If you have ALREADY sent the customer their reply, do NOT send another email — your only remaining steps are recording (create_inquiry/create_quote) and mark_email_done, then STOP.";
+  "RULE CHECK: the rules are in your instructions above — no need to re-read them every step. Confirm the result above complies (price from catalog, slot from get_availability, required fields present, no off-policy discounts, complaints escalated, customer email only via compose_and_send). If it violated a rule, fix it before continuing. Gather read-only info freely, but make only ONE change (book/send/reschedule/cancel) per turn and verify it. STOP CONDITION: at most ONE customer email per inbound — once the customer's reply is sent, only record (create_inquiry/create_quote) and mark_email_done, then stop.";
 
 // --- Classification Types ---
 export type EmailClassification =
@@ -167,13 +168,12 @@ YOUR PROTOCOL:
 4. After every action, call log_operation to record what you did.
 5. After all actions, call mark_email_done to prevent reprocessing.
 
-=== WORK IN A READ → ACT → VERIFY CYCLE (one action at a time) ===
-Operate strictly like this, repeating for every action:
-1. READ: call read_rules (or re-read the MANDATORY RULES already in your instructions).
-2. ACT: take exactly ONE action (one tool call that changes something — send, book, reschedule, cancel, record).
-3. VERIFY: after the result comes back, confirm it complied with the rules. If it violated any rule, correct it before doing anything else.
-4. Repeat from step 1 for the next action.
-Never batch multiple changing actions without re-reading and verifying between them. After every tool result you will be reminded to do this — actually do it.
+=== WORK IN A READ → ACT → VERIFY CYCLE ===
+The MANDATORY RULES are always present in your instructions above — they are in front of you every step, so you do NOT need to call read_rules each turn (use it only if you are genuinely unsure of a detail). Operate like this:
+1. GATHER: you may call multiple READ-ONLY tools in a single turn (list_services, get_service, get_availability, get_booking) to collect everything you need at once.
+2. ACT: take exactly ONE state-changing action per turn — create_booking, compose_and_send, send_email, reschedule, cancel. Never fire two changing actions in the same turn.
+3. VERIFY: when the result returns, confirm it complied with the rules (price from catalog, slot from get_availability, required fields present, no off-policy discounts, complaints escalated). If anything violated a rule, fix it before the next action.
+4. Repeat for the next change. After every tool result you'll get a short RULE CHECK reminder — actually do it.
 
 ONE CUSTOMER REPLY PER EMAIL: Each inbound message gets exactly one customer-facing email. A booking request you can fulfil → ONE booking_confirmation (do NOT also send a quote). An inquiry → ONE quote. Missing info → ONE missing_info. After that reply is sent, record it and call mark_email_done — do not send anything else to the customer for this message.
 
@@ -1038,6 +1038,8 @@ ${emailSummaries}`;
       { role: "user", content: userMessage },
     ];
 
+    let _calls = 0, _usageIn = 0, _usageOut = 0;
+
     const ctx = { repliedTo: new Set<string>() };
 
     for (let i = 0; i < 40; i++) {
@@ -1049,6 +1051,8 @@ ${emailSummaries}`;
         tools: AUTOMATION_TOOLS,
         messages: currentMessages,
       });
+
+      _calls++; _usageIn += (response as any).usage?.input_tokens || 0; _usageOut += (response as any).usage?.output_tokens || 0;
 
       const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
       const textBlocks = response.content
@@ -1082,6 +1086,7 @@ ${emailSummaries}`;
       currentMessages.push({ role: "user", content: toolResults });
     }
 
+    await recordUsage({ model: BUSINESS.ai.model, context: "automation_cycle", calls: _calls, inputTokens: _usageIn, outputTokens: _usageOut });
     appendOperation({
       type: "email_received",
       details: `Automation cycle complete. Processed ${unprocessed.length} emails.`,
@@ -1163,6 +1168,7 @@ ${emailSummaries}`;
   ];
 
   try {
+    let _calls = 0, _usageIn = 0, _usageOut = 0;
     const ctx = { repliedTo: new Set<string>() };
     for (let i = 0; i < 40; i++) {
       const response = await client.messages.create({
@@ -1173,6 +1179,8 @@ ${emailSummaries}`;
         tools: AUTOMATION_TOOLS,
         messages: currentMessages,
       });
+
+      _calls++; _usageIn += (response as any).usage?.input_tokens || 0; _usageOut += (response as any).usage?.output_tokens || 0;
 
       const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
       const textBlocks = response.content
@@ -1193,6 +1201,7 @@ ${emailSummaries}`;
       toolResults.push({ type: "text", text: RULE_CHECK });
       currentMessages.push({ role: "user", content: toolResults });
     }
+    await recordUsage({ model: BUSINESS.ai.model, context: "webhook_messages", calls: _calls, inputTokens: _usageIn, outputTokens: _usageOut });
   } catch (err: any) {
     errors.push(err.message || String(err));
   }

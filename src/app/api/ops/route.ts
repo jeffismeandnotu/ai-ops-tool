@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { readOpsLog, readProcessedEmails, getOpsLogSummary } from "@/lib/ops-log";
+import { readOpsLog, readProcessedEmails, getOpsLogSummary, getUsageSummary } from "@/lib/ops-log";
 
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
@@ -23,6 +23,8 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ operations: await readOpsLog() });
       case "processed":
         return NextResponse.json({ processed: await readProcessedEmails() });
+      case "usage":
+        return NextResponse.json({ usage: await getUsageSummary() });
       case "all":
         return NextResponse.json({
           summary: await getOpsLogSummary(),

@@ -172,3 +172,73 @@ export async function getRecentOperations(hours = 24): Promise<Operation[]> {
   const rows = await sql`SELECT * FROM ai_ops_log WHERE timestamp > NOW() - INTERVAL '1 hour' * ${hours} ORDER BY timestamp DESC`;
   return rows as any;
 }
+
+// ============================================================
+// USAGE / COST TRACKING — per-run token + request accounting
+// ============================================================
+const MODEL_PRICING: Record<string, { in: number; out: number }> = {
+  // per million tokens (input / output)
+  "claude-sonnet-4-5": { in: 3, out: 15 },
+  "claude-3-5-haiku": { in: 0.8, out: 4 },
+  "gemini-2.5-flash-lite": { in: 0.1, out: 0.4 },
+  "gemini-3.1-flash-lite": { in: 0.25, out: 1.5 },
+  "gemini-3-flash": { in: 0.5, out: 3 },
+};
+
+export function estimateCost(model: string, inTok: number, outTok: number): number {
+  const key = Object.keys(MODEL_PRICING).find((k) => (model || "").includes(k));
+  const p = key ? MODEL_PRICING[key] : { in: 0, out: 0 };
+  return (inTok / 1e6) * p.in + (outTok / 1e6) * p.out;
+}
+
+let _usageInit = false;
+async function ensureUsageTable() {
+  if (_usageInit) return;
+  const sql = getDb();
+  await sql`CREATE TABLE IF NOT EXISTS ai_usage (
+    id TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    model TEXT,
+    context TEXT,
+    calls INT,
+    input_tokens BIGINT,
+    output_tokens BIGINT,
+    cost_usd NUMERIC
+  )`;
+  _usageInit = true;
+}
+
+export async function recordUsage(o: {
+  model: string;
+  context?: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}): Promise<void> {
+  try {
+    await ensureUsageTable();
+    const sql = getDb();
+    const cost = estimateCost(o.model, o.inputTokens, o.outputTokens);
+    const id = `use_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await sql`INSERT INTO ai_usage (id, model, context, calls, input_tokens, output_tokens, cost_usd)
+      VALUES (${id}, ${o.model}, ${o.context || null}, ${o.calls}, ${o.inputTokens}, ${o.outputTokens}, ${cost})`;
+  } catch {
+    // never let usage logging break a run
+  }
+}
+
+export async function getUsageSummary(): Promise<any> {
+  await ensureUsageTable();
+  const sql = getDb();
+  const agg = `COUNT(*)::int AS runs, COALESCE(SUM(calls),0)::int AS calls,
+    COALESCE(SUM(input_tokens),0)::bigint AS input_tokens,
+    COALESCE(SUM(output_tokens),0)::bigint AS output_tokens,
+    ROUND(COALESCE(SUM(cost_usd),0)::numeric, 4) AS cost_usd`;
+  const total = await sql.query(`SELECT ${agg} FROM ai_usage`);
+  const today = await sql.query(`SELECT ${agg} FROM ai_usage WHERE created_at >= CURRENT_DATE`);
+  const recent = await sql.query(
+    `SELECT created_at, model, context, calls, input_tokens, output_tokens,
+      ROUND(cost_usd::numeric, 5) AS cost_usd FROM ai_usage ORDER BY created_at DESC LIMIT 20`
+  );
+  return { total: total[0], today: today[0], recent };
+}
