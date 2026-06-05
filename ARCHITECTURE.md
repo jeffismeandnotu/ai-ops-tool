@@ -71,6 +71,14 @@ POST /api/gmail/webhook?secret=<GMAIL_WEBHOOK_SECRET>
 - Dedup via atomic `claimEmail()` (INSERT ... ON CONFLICT DO NOTHING)
 - Self-renews the Gmail watch when within 24h of expiry
 
+### Order of Operations (per inbound email)
+1. Load client profile (golden record) → inject as `WHAT WE ALREADY KNOW` block
+2. Classify email (`classify_email`)
+3. Save any new profile details from email body (`save_client_info`)
+4. Determine truly-missing fields from merged view
+5. Confirm known values (especially address) rather than silently reusing
+6. Send exactly one customer reply → `mark_email_done`
+
 ### 2. Cron Polling (fallback)
 ```
 GET /api/cron/process?secret=<CRON_SECRET>
@@ -83,12 +91,13 @@ GET /api/cron/process?secret=<CRON_SECRET>
 
 ## Automation Engine (`src/lib/automation.ts`)
 
-The core ~1800-line module that orchestrates everything:
+The core ~2000-line module that orchestrates everything:
 
 ### System Prompt (`buildAutomationPrompt`)
 - Business config, services, pricing, working hours
 - 3-phase booking protocol
 - Hard rules (one reply per inbound, template-only outbound, facts from tools)
+- Golden record rules: never re-ask known fields, confirm address before booking, persist new details via `save_client_info`
 - Escalation routing
 - Anti-injection awareness (untrusted data delimiters)
 
@@ -98,6 +107,13 @@ The core ~1800-line module that orchestrates everything:
 - Retry on 429/529 with exponential backoff
 - RULE_CHECK injected after every tool result
 - Token/cost tracking via `ai_usage` table
+
+### Client Profile Injection
+Every inbound email triggers a pre-flight profile load:
+1. Resolve sender email → `findOrCreateClient` (create on first contact)
+2. `getClientProfile()` returns consolidated golden record: client fields + open inquiry + latest quote + active booking phase + recent bookings
+3. Injected as `<trusted-internal-data>` block ("WHAT WE ALREADY KNOW ABOUT THIS CUSTOMER") — distinct from `<untrusted-email>` body
+4. Agent reads the block before reasoning; only asks for genuinely missing fields
 
 ### Tool Executor (`executeTool`)
 30+ tools with deterministic code guards:
@@ -162,7 +178,7 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `clients` | Client records | id, email (unique), name, phone, address, city, postal_code |
+| `clients` | Client golden record | id, email (unique), name, phone, address, city, postal_code, property_type, bedrooms, bathrooms, pets, parking, access_notes, service_interest, recurring, preferred_times, special_instructions, last_contact_at |
 | `bookings` | Booking records (source of truth) | id, client_id (FK), service_id, price, date, time, duration, status, calendar_event_id |
 | `inquiries` | Inbound email records | id, thread_id, client_id (FK), type, summary, requested_service_id |
 | `quotes` | Sent quotes | id, inquiry_id, service_id, price, status, customer_email |
@@ -235,7 +251,7 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 | `booking-service.ts` | Guarded booking operations: create, reschedule, cancel (enforces catalog prices, slot validation, 24h cancellation policy) |
 | `booking-phases.ts` | 3-phase state machine (get/set/reset per thread) |
 | `availability.ts` | Slot computation from bookings DB: `getAvailability`, `isSlotFree`, `getUpcomingAvailability` |
-| `clients-db.ts` | Client CRUD, booking CRUD, inquiries, quotes, email log |
+| `clients-db.ts` | Client CRUD, booking CRUD, inquiries, quotes, email log, `getClientProfile()` (consolidated golden record), `mergeUpsertClient()` (merge-only upsert with address history, gate code scrubbing), duplicate detection |
 | `catalog.ts` | Service catalog lookup (`getService`, `listServices`, `requireService`) |
 | `templates.ts` | 11 email templates with variation engine (`pick()` for warm-professional tone), `validateOutboundFacts` |
 | `triage.ts` | `scanRisk()` keyword detector (HUMAN, MONEY_LEGAL, ANGER), classification persistence |
@@ -258,6 +274,12 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 - Anti-injection warning in system prompt
 - Injected `</untrusted-email>` tags stripped from email content
 - Owner email removed from prompt (model uses `notify_owner` tool)
+
+### Client Profile Security
+- Golden record fields are `<trusted-internal-data>` — never mixed with `<untrusted-email>` content
+- Gate/lock codes are automatically scrubbed from `access_notes` (stored as "has gate/door code — see thread")
+- Duplicate customers (same name+phone, different email) flagged to owner — never auto-merged
+- `mergeUpsertClient()` never blanks an existing value; address changes are tracked in notes with timestamps
 
 ### Recipient Allowlist
 - Outbound emails restricted to original sender(s) of the inbound email
@@ -329,7 +351,7 @@ All customer-facing emails are sent via `compose_and_send`, which picks a templa
 
 | Template | When Used |
 |----------|-----------|
-| `services_list` | Customer hasn't specified a service |
+| `services_list` | Customer hasn't specified a service — shows 1-3 relevant services (via `serviceIds`) with short blurbs, not the full catalog |
 | `quote` | Specific service identified, sends price |
 | `availability` | Customer asks for available times |
 | `booking_confirmation` | Booking created successfully |
@@ -345,6 +367,8 @@ Each template uses a `pick()` function for variation (warm-professional tone). `
 ---
 
 ## Services Catalog
+
+Each service has a `short` blurb (≤8 words) used in service-list replies, plus a full `description` used elsewhere.
 
 | ID | Name | Duration | Price (CAD) |
 |----|------|----------|-------------|
