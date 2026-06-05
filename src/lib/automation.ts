@@ -167,7 +167,7 @@ async function buildAutomationPrompt(): Promise<string> {
 Every booking conversation moves through phase 1 -> 2 -> 3. A phase must be marked complete before the next begins. ALWAYS call get_phase(threadId) FIRST and do only the current phase's work.
 
 PHASE 1 — TALK:
-Be helpful and informative. Work out which service they want (get_service / list_services for the price, get_availability for real free times) and answer their questions. Then ask if they'd like to go ahead: send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
+Be helpful and informative. Work out which service they want (get_service / list_services for the price, get_availability for real free times) and answer their questions. Then ask if they'd like to go ahead: send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Pull get_availability immediately before quoting and pass its exact slot labels verbatim — the send is blocked if any offered time isn't actually free. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
 
 PHASE 2 — CONFIRM (only once the client replies accepting a time):
 Read their confirmation. Call get_required_booking_fields and check you have every one: client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3.
@@ -756,6 +756,29 @@ async function executeTool(
         if (t === "quote") {
           const svc = catalog.getService(input.serviceId);
           if (!svc) return JSON.stringify({ success: false, error: `Unknown service_id '${input.serviceId}'` });
+          // Every offered time MUST be verified free against the source of truth.
+          const rawSlots = (input.slots || []).map((s: any) => (typeof s === "string" ? s : s?.label || ""));
+          if (rawSlots.length === 0) {
+            return JSON.stringify({ success: false, blocked: true, error: "A quote must offer at least one time. Call get_availability and pass the exact slot labels it returns." });
+          }
+          const badSlots: string[] = [];
+          for (const lbl of rawSlots) {
+            const m = String(lbl).match(/(\d{4}-\d{2}-\d{2})[ T]+(\d{1,2}:\d{2})/);
+            if (!m) {
+              badSlots.push(`"${lbl}" — not a recognized slot; use the exact "YYYY-MM-DD HH:MM" label from get_availability`);
+              continue;
+            }
+            const hhmm = m[2].length === 4 ? `0${m[2]}` : m[2];
+            const chk = await availability.isSlotFree(m[1], input.serviceId, hhmm);
+            if (!chk.free) badSlots.push(`"${lbl}" — ${chk.reason || "not free"}`);
+          }
+          if (badSlots.length) {
+            return JSON.stringify({
+              success: false,
+              blocked: true,
+              error: `Cannot send — these offered times are not free/valid: ${badSlots.join("; ")}. Call get_availability(date, serviceId) and offer ONLY the exact slot labels it returns. Never invent or reuse stale times.`,
+            });
+          }
           built = quoteEmail({
             firstName: input.firstName,
             serviceName: svc.name,
