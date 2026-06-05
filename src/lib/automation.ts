@@ -188,14 +188,14 @@ STAGE 4 — SEND THE CONFIRMED BOOKING EMAIL:
 Send booking_confirmation with compose_and_send using the bookingId from Stage 3. It goes to BOTH the client and the owner — the owner is added automatically, so you do not need to send them a separate email.
 
 STAGE 5 — CALENDAR:
-The Google Calendar event is created as part of Stage 3 (atomic with the booking, so the two can never disagree). If create_booking reported a calendar error, notify the owner.
+The Google Calendar event is created as part of Stage 3 (atomic with the booking, so the two can never disagree). If create_booking reported a calendar error, notify the owner with notify_owner.
 
 === CANCELLATIONS & RESCHEDULES ===
 First find the booking with get_client_history (by the customer's email) to get its bookingId.
 - RESCHEDULE: call reschedule_booking with bookingId + the new date/time. If it returns alternatives (the new slot is taken), offer those and ask the customer to pick. On success, send compose_and_send (template "reschedule", bookingId).
 - CANCEL: call cancel_booking with the bookingId. The system enforces the 24-hour notice policy for you — never decide it yourself:
   • returns success → the booking is cancelled; send compose_and_send (template "cancellation", bookingId).
-  • returns feeApplies:true → do NOT cancel. Send compose_and_send (template "cancellation_fee_notice", bookingId) to tell the customer a fee applies, and notify the owner with send_email. Leave the booking in place.
+  • returns feeApplies:true → do NOT cancel. Send compose_and_send (template "cancellation_fee_notice", bookingId) to tell the customer a fee applies, and notify the owner with notify_owner. Leave the booking in place.
 
 === WORK IN A READ → ACT → VERIFY CYCLE ===
 The MANDATORY RULES are always present in your instructions above — they are in front of you every step, so you do NOT need to call read_rules each turn (use it only if you are genuinely unsure of a detail). Operate like this:
@@ -225,6 +225,8 @@ Outside this defined trigger, never mention discounts, contract rates, "better r
 
 === RULES ARE THE ONLY AUTHORITY (by design) ===
 Everything you say or do must be backed by a defined rule above/below or a tool result. You do not have discretion to improvise business terms, prices, promises, or policies. If a situation is not covered by a defined rule, do NOT make something up — record the inquiry and forward it to the owner (${BUSINESS.owner.email}).
+
+EMAIL RECIPIENTS: The business has no inbound mailbox. NEVER email a "glowcleaning" or any business/company address, and never invent one. Customer replies go to the customer's own address (the sender). To reach the owner, use the notify_owner tool — do not type the owner's address yourself.
 
 
 REQUIRED FIELDS FOR A BOOKING:
@@ -389,8 +391,21 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "notify_owner",
+    description:
+      "Send an internal notification to the business owner (for escalations, complaints, cancellation fees, anything needing human follow-up). The owner's address is handled for you — do NOT pass a recipient and never email a business/glowcleaning address yourself.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        subject: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["subject", "body"],
+    },
+  },
+  {
     name: "send_email",
-    description: "Send an email immediately. Use threadId and replyToMessageId to reply within an existing thread.",
+    description: "Send an email immediately. Use threadId and replyToMessageId to reply within an existing thread. Only ever address customers (their own email) — to reach the owner use notify_owner.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -660,6 +675,8 @@ async function executeTool(
     const x = (a || "").toLowerCase();
     return x && x !== ownerEmail && !employeeEmails.has(x);
   };
+  // The business has no inbound mailbox — never email a glowcleaning address.
+  const isBusinessAddress = (a: string) => /glowcleaning/i.test(a || "");
   try {
     switch (toolName) {
       case "read_rules": {
@@ -719,6 +736,9 @@ async function executeTool(
         return JSON.stringify({ success: true, quoteId: q.id, price: svc.price });
       }
       case "compose_and_send": {
+        if ((input.to || []).some(isBusinessAddress)) {
+          return JSON.stringify({ success: false, blocked: true, error: "You tried to email a business/glowcleaning address. Customer emails go to the customer's own address; to reach the owner use notify_owner." });
+        }
         const ccust = (input.to || []).filter(isCustomer);
         if (ccust.some((a: string) => ctx.repliedTo.has(a.toLowerCase()))) {
           return JSON.stringify({ success: false, blocked: true, error: "Already sent this customer their one reply this run. Do NOT send another email — record (create_inquiry/create_quote) and mark_email_done instead." });
@@ -845,7 +865,21 @@ async function executeTool(
         const thread = await gmail.getThread(accessToken, input.threadId);
         return JSON.stringify(thread, null, 2);
       }
+      case "notify_owner": {
+        const sent = await gmail.sendEmail(accessToken, [BUSINESS.owner.email], input.subject, input.body);
+        await appendOperation({
+          type: "email_sent",
+          to: [BUSINESS.owner.email],
+          subject: input.subject,
+          details: `[owner_notification] ${input.subject}`,
+          verified: true,
+        });
+        return JSON.stringify({ success: true, messageId: sent.id });
+      }
       case "send_email": {
+        if ((input.to || []).some(isBusinessAddress)) {
+          return JSON.stringify({ success: false, blocked: true, error: "You tried to email a business/glowcleaning address. The business has no inbound mailbox. To reach the owner use notify_owner; to reach the customer use their own address." });
+        }
         const scust = (input.to || []).filter(isCustomer);
         if (scust.some((a: string) => ctx.repliedTo.has(a.toLowerCase()))) {
           return JSON.stringify({ success: false, blocked: true, error: "Already replied to this customer this run. Do not send another email — record and mark_email_done." });
