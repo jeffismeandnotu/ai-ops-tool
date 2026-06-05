@@ -110,15 +110,22 @@ export async function getAvailability(
     label: `${date} ${toHHMM(startMin)}`,
   });
 
+  const STEP = 30;
   const slots: Slot[] = [];
   let cursor = open;
   for (const o of occ) {
-    if (o.s - cursor >= need) slots.push(mk(cursor));
+    while (cursor + need <= o.s) {
+      slots.push(mk(cursor));
+      cursor += STEP;
+    }
     cursor = Math.max(cursor, o.e);
   }
-  if (close - cursor >= need) slots.push(mk(cursor));
+  while (cursor + need <= close) {
+    slots.push(mk(cursor));
+    cursor += STEP;
+  }
 
-  return { ok: true, date, serviceId, durationMinutes: svc.duration, slots: slots.slice(0, 6) };
+  return { ok: true, date, serviceId, durationMinutes: svc.duration, slots: slots.slice(0, 8) };
 }
 
 // Scan forward from today and return up to `days` working days that have free slots.

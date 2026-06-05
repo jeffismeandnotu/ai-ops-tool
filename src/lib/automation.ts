@@ -210,13 +210,13 @@ PHASE 2 — VALIDATE & CONFIRM:
 Goal: the customer is replying to your quote. Determine what they said and take ONE of these actions:
 
 ACTION A — Customer NAMES A SPECIFIC DATE+TIME (e.g. "Tuesday at 10", "June 10 2 PM", "the 10:30 slot"):
-  1. Call get_availability(date, serviceId) to validate THAT ONE slot.
-     - Do NOT call get_upcoming_availability.
+  1. Call check_slot(date, serviceId, time) to validate THAT ONE slot.
+     - Do NOT call get_availability or get_upcoming_availability.
      - Do NOT send the availability template.
-  2. If FREE: check required fields (name, email, service, date, time, address).
+  2. If free=true: check required fields (name, email, service, date, time, address).
      - All present → mark_phase_complete(2), go immediately to Phase 3.
      - Missing fields → send "missing_info" for only what's missing. STOP.
-  3. If NOT FREE: tell them briefly it's taken, then call get_upcoming_availability and send "availability" with alternatives. STOP.
+  3. If free=false: tell them briefly it's taken, then call get_upcoming_availability and send "availability" with alternatives. STOP.
 
 ACTION B — Customer ASKS TO SEE AVAILABILITY ("what times do you have?", "when are you free?"):
   Call get_upcoming_availability(serviceId), send compose_and_send template "availability". STOP.
@@ -364,9 +364,23 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "check_slot",
+    description:
+      "Check if a SPECIFIC date+time is free for a service. Use when the customer names a time and you need to validate it. Returns {free: true/false, reason?}.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD" },
+        service_id: { type: "string", description: "Service id" },
+        time: { type: "string", description: "HH:MM (24h)" },
+      },
+      required: ["date", "service_id", "time"],
+    },
+  },
+  {
     name: "get_availability",
     description:
-      "Return the real free time slots for a service on a date, computed from the bookings database (the source of truth). You may ONLY offer times this returns. Never invent a slot.",
+      "Return a list of free time slots for a service on a date, computed from the bookings database. Use when you need to SHOW available options — not to validate a specific time (use check_slot for that).",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -798,7 +812,7 @@ async function executeTool(
         const guide: Record<string, string> = {
           general_inquiry: "Answer their question helpfully using get_service/get_availability, then invite them to book (Phase 1).",
           booking_request: "Booking flow — call get_phase(threadId) and follow its guidance exactly.",
-          booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Follow the PHASE 2 ACTION A guidance: validate the specific slot with get_availability (NOT get_upcoming_availability), check fields, then book.",
+          booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Follow the PHASE 2 ACTION A guidance: validate with check_slot(date, serviceId, time), then if free=true check fields and book.",
           missing_info: "Send compose_and_send template 'missing_info' for the unknown field; stay in the current phase.",
           reschedule: "get_client_history → reschedule_booking; send template 'reschedule'. Reschedules are free.",
           cancellation: "get_client_history → cancel_booking. Let the tool decide the 24h policy; never decide it yourself.",
@@ -841,7 +855,7 @@ async function executeTool(
         const st = await getPhase(input.threadId || "");
         const guide: Record<number, string> = {
           0: "Do PHASE 1: identify the service, send a price-only quote (no times), ask what day/time suits them. Do NOT call get_availability or get_upcoming_availability yet.",
-          1: "Do PHASE 2: the customer is replying to your quote. Read their message: (A) If they NAME a specific date+time → call get_availability(date, serviceId) to validate THAT ONE slot — do NOT call get_upcoming_availability, do NOT re-send availability. If free + all fields present → mark_phase_complete(2) and book. If not free → show alternatives via get_upcoming_availability. (B) If they ASK for availability without naming a time → call get_upcoming_availability and send availability template. (C) If they ask a question → answer it.",
+          1: "Do PHASE 2: the customer is replying to your quote. Read their message: (A) If they NAME a specific date+time → call check_slot(date, serviceId, time) to validate it — do NOT call get_availability or get_upcoming_availability, do NOT re-send availability. If free=true + all fields present → mark_phase_complete(2) and book. If free=false → show alternatives via get_upcoming_availability. (B) If they ASK for availability without naming a time → call get_upcoming_availability and send availability template. (C) If they ask a question → answer it.",
           2: "Do PHASE 3: find_or_create_client, then create_booking. On success send booking_confirmation. If slot taken, offer the alternatives returned.",
           3: "Already booked. Only handle reschedules, cancellations, or address/notes changes.",
         };
@@ -891,6 +905,10 @@ async function executeTool(
         const svc = catalog.getService(input.service_id);
         if (!svc) return JSON.stringify({ error: `Unknown service_id '${input.service_id}'. Call list_services for valid ids.` });
         return JSON.stringify(svc, null, 2);
+      }
+      case "check_slot": {
+        const result = await availability.isSlotFree(input.date, input.service_id, input.time);
+        return JSON.stringify(result, null, 2);
       }
       case "get_availability": {
         const result = await availability.getAvailability(input.date, input.service_id);
