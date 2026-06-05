@@ -590,7 +590,7 @@ export async function getClientProfile(email: string): Promise<ClientProfile | n
 
   const phRows = await sql`SELECT thread_id, phase FROM booking_phases
     WHERE thread_id IN (SELECT thread_id FROM inquiries WHERE client_id = ${client.id})
-    AND phase < 3 ORDER BY created_at DESC LIMIT 1`;
+    AND phase < 3 ORDER BY updated_at DESC LIMIT 1`;
   const activePhase = phRows.length ? { thread_id: phRows[0].thread_id as string, phase: Number(phRows[0].phase) } : null;
 
   const bookingRows = await sql`SELECT * FROM bookings WHERE client_id = ${client.id} ORDER BY date DESC LIMIT 5`;
@@ -652,6 +652,9 @@ export async function mergeUpsertClient(
       notesAppend = `Previous address (${new Date().toISOString().slice(0, 10)}): ${old.address}`;
     }
 
+    const bedroomsStr = fields.bedrooms != null ? String(fields.bedrooms) : "";
+    const bathroomsStr = fields.bathrooms != null ? String(fields.bathrooms) : "";
+
     await sql`UPDATE clients SET
       name = COALESCE(NULLIF(${fields.name || ""}, ''), name),
       first_name = COALESCE(NULLIF(${fields.firstName || ""}, ''), first_name),
@@ -661,8 +664,8 @@ export async function mergeUpsertClient(
       city = COALESCE(NULLIF(${fields.city || ""}, ''), city),
       postal_code = COALESCE(NULLIF(${fields.postalCode || ""}, ''), postal_code),
       property_type = COALESCE(NULLIF(${fields.propertyType || ""}, ''), property_type),
-      bedrooms = COALESCE(${fields.bedrooms ?? null}, bedrooms),
-      bathrooms = COALESCE(${fields.bathrooms ?? null}, bathrooms),
+      bedrooms = COALESCE(NULLIF(${bedroomsStr}, '')::INT, bedrooms),
+      bathrooms = COALESCE(NULLIF(${bathroomsStr}, '')::INT, bathrooms),
       pets = COALESCE(NULLIF(${fields.pets || ""}, ''), pets),
       parking = COALESCE(NULLIF(${fields.parking || ""}, ''), parking),
       access_notes = COALESCE(NULLIF(${safeAccessNotes || ""}, ''), access_notes),
@@ -670,7 +673,7 @@ export async function mergeUpsertClient(
       recurring = COALESCE(NULLIF(${fields.recurring || ""}, ''), recurring),
       preferred_times = COALESCE(NULLIF(${fields.preferredTimes || ""}, ''), preferred_times),
       special_instructions = COALESCE(NULLIF(${fields.specialInstructions || ""}, ''), special_instructions),
-      notes = CASE WHEN ${notesAppend} IS NOT NULL
+      notes = CASE WHEN ${notesAppend || ""} <> ''
         THEN COALESCE(notes || E'\n', '') || ${notesAppend || ""}
         ELSE notes END,
       last_contact_at = NOW(),
@@ -685,12 +688,15 @@ export async function mergeUpsertClient(
   const id = genId("cli");
   const name = fields.name || [fields.firstName, fields.lastName].filter(Boolean).join(" ") || email.split("@")[0];
 
+  const newBedroomsStr = fields.bedrooms != null ? String(fields.bedrooms) : null;
+  const newBathroomsStr = fields.bathrooms != null ? String(fields.bathrooms) : null;
+
   await sql`INSERT INTO clients (id, email, name, first_name, last_name, phone, address, city, postal_code,
     property_type, bedrooms, bathrooms, pets, parking, access_notes, service_interest, recurring, preferred_times, special_instructions,
     source, last_contact_at)
     VALUES (${id}, ${email}, ${name}, ${fields.firstName || null}, ${fields.lastName || null}, ${fields.phone || null},
     ${fields.address || null}, ${fields.city || null}, ${fields.postalCode || null},
-    ${fields.propertyType || null}, ${fields.bedrooms ?? null}, ${fields.bathrooms ?? null},
+    ${fields.propertyType || null}, ${newBedroomsStr}::INT, ${newBathroomsStr}::INT,
     ${fields.pets || null}, ${fields.parking || null}, ${safeAccessNotes}, ${fields.serviceInterest || null},
     ${fields.recurring || null}, ${fields.preferredTimes || null}, ${fields.specialInstructions || null},
     'email', NOW())`;
