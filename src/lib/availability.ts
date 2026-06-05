@@ -120,3 +120,61 @@ export async function getAvailability(
 
   return { ok: true, date, serviceId, durationMinutes: svc.duration, slots: slots.slice(0, 6) };
 }
+
+// Scan forward from today and return up to `days` working days that have free slots.
+export async function getUpcomingAvailability(
+  serviceId: string,
+  days = 5
+): Promise<{ date: string; weekday: string; slots: string[] }[]> {
+  const svc = getService(serviceId);
+  if (!svc) return [];
+
+  // Current wall-clock time in the business timezone
+  const nowParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS.timezone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+    .formatToParts(new Date())
+    .reduce((a: any, p) => ((a[p.type] = p.value), a), {});
+  const todayStr = `${nowParts.year}-${nowParts.month}-${nowParts.day}`;
+  const nowMin = +nowParts.hour * 60 + +nowParts.minute;
+
+  const result: { date: string; weekday: string; slots: string[] }[] = [];
+  const cursor = new Date(`${todayStr}T12:00:00Z`);
+
+  for (let scanned = 0; scanned < 30 && result.length < days; scanned++) {
+    const dateStr = cursor.toISOString().slice(0, 10);
+    const wd = WEEKDAYS[cursor.getUTCDay()];
+
+    if (BUSINESS.calendar.workingDays.includes(wd)) {
+      const avail = await getAvailability(dateStr, serviceId);
+      let slots = avail.slots;
+
+      // For today, drop slots whose start is already in the past
+      if (dateStr === todayStr) {
+        slots = slots.filter((s) => toMin(s.start) > nowMin);
+      }
+
+      if (slots.length > 0) {
+        const weekday = cursor.toLocaleDateString("en-US", {
+          weekday: "long",
+          timeZone: "UTC",
+        });
+        result.push({
+          date: dateStr,
+          weekday,
+          slots: slots.slice(0, 4).map((s) => s.label),
+        });
+      }
+    }
+
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return result;
+}
