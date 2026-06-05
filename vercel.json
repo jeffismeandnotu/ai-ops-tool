@@ -2,7 +2,7 @@
   "framework": "nextjs",
   "crons": [
     {
-      "path": "/api/cron/process?secret=${CRON_SECRET}",
+      "path": "/api/gmail/watch?secret=${CRON_SECRET}",
       "schedule": "0 9 * * *"
     }
   ]

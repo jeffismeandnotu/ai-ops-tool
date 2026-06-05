@@ -810,3 +810,99 @@ ${emailSummaries}`;
     return { processed: 0, actions, errors };
   }
 }
+
+// ============================================================
+// EVENT-DRIVEN PROCESSING — handle a specific set of message IDs
+// ============================================================
+// Called by the Gmail push webhook with exactly the messages that
+// arrived (from history.list). No inbox re-scan, no polling.
+export async function runAutomationForMessages(
+  accessToken: string,
+  messageIds: string[]
+): Promise<{ processed: number; actions: string[]; errors: string[] }> {
+  const actions: string[] = [];
+  const errors: string[] = [];
+
+  // Fetch + filter to genuinely new, business-relevant messages.
+  const unprocessed: any[] = [];
+  for (const id of messageIds) {
+    try {
+      if (await isEmailProcessed(id)) continue;
+      const msg = await gmail.getMessage(accessToken, id);
+      const labels = (msg as any).labelIds || [];
+      if (labels.includes("SENT") || labels.includes("DRAFT")) continue;
+      unprocessed.push(msg);
+    } catch (e: any) {
+      errors.push(`fetch ${id}: ${e.message || e}`);
+    }
+  }
+
+  if (unprocessed.length === 0) {
+    return { processed: 0, actions: ["No new messages to process"], errors };
+  }
+
+  const emailSummaries = unprocessed
+    .map(
+      (e, i) =>
+        `EMAIL ${i + 1}:
+  ID: ${e.id}
+  Thread: ${e.threadId}
+  Message-ID: ${e.messageId || "unknown"}
+  From: ${e.from}
+  To: ${e.to}
+  Subject: ${e.subject}
+  Date: ${e.date}
+  Body: ${e.body?.slice(0, 1000) || e.snippet}
+
+IMPORTANT: When replying, use threadId="${e.threadId}" and replyToMessageId="${e.messageId || ""}" to stay in the same thread.`
+    )
+    .join("\n\n---\n\n");
+
+  const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
+1. Call check_already_processed first
+2. If not processed: classify it, execute the workflow, log operations, mark done
+3. If already processed: skip it
+
+EMAILS TO PROCESS:
+
+${emailSummaries}`;
+
+  const systemPrompt = await buildAutomationPrompt();
+  let currentMessages: Anthropic.MessageParam[] = [
+    { role: "user", content: userMessage },
+  ];
+
+  try {
+    for (let i = 0; i < 20; i++) {
+      const response = await client.messages.create({
+        model: BUSINESS.ai.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        tools: AUTOMATION_TOOLS,
+        messages: currentMessages,
+      });
+
+      const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
+      const textBlocks = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as any).text);
+      if (textBlocks.length > 0) actions.push(...textBlocks);
+
+      if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") break;
+
+      currentMessages.push({ role: "assistant", content: response.content });
+      const toolResults: any[] = [];
+      for (const tool of toolUseBlocks) {
+        const t = tool as any;
+        const result = await executeTool(t.name, t.input, accessToken);
+        toolResults.push({ type: "tool_result", tool_use_id: t.id, content: result });
+        actions.push(`Tool: ${t.name}(${JSON.stringify(t.input).slice(0, 100)})`);
+      }
+      currentMessages.push({ role: "user", content: toolResults });
+    }
+  } catch (err: any) {
+    errors.push(err.message || String(err));
+  }
+
+  return { processed: unprocessed.length, actions, errors };
+}

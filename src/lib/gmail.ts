@@ -172,6 +172,67 @@ export async function getLabels(accessToken: string) {
   return res.data.labels || [];
 }
 
+// --- Push notifications (watch) ---
+export async function watchMailbox(accessToken: string, topicName: string) {
+  const gmail = getGmailClient(accessToken);
+  const res = await gmail.users.watch({
+    userId: "me",
+    requestBody: {
+      topicName,
+      labelIds: ["INBOX"],
+      labelFilterBehavior: "INCLUDE",
+    },
+  });
+  // { historyId, expiration }
+  return res.data;
+}
+
+export async function stopWatch(accessToken: string) {
+  const gmail = getGmailClient(accessToken);
+  await gmail.users.stop({ userId: "me" });
+}
+
+// Returns the message IDs added since startHistoryId (INBOX only).
+export async function listAddedMessageIds(
+  accessToken: string,
+  startHistoryId: string
+): Promise<string[]> {
+  const gmail = getGmailClient(accessToken);
+  const ids = new Set<string>();
+  let pageToken: string | undefined;
+  do {
+    const res = await gmail.users.history.list({
+      userId: "me",
+      startHistoryId,
+      historyTypes: ["messageAdded"],
+      labelId: "INBOX",
+      pageToken,
+    });
+    for (const h of res.data.history || []) {
+      for (const m of h.messagesAdded || []) {
+        const msg = m.message;
+        if (!msg?.id) continue;
+        const labels = msg.labelIds || [];
+        // Skip our own sent mail and drafts so we never reply to ourselves.
+        if (labels.includes("SENT") || labels.includes("DRAFT")) continue;
+        ids.add(msg.id);
+      }
+    }
+    pageToken = res.data.nextPageToken || undefined;
+  } while (pageToken);
+  return [...ids];
+}
+
+export async function getMessage(accessToken: string, messageId: string) {
+  const gmail = getGmailClient(accessToken);
+  const full = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full",
+  });
+  return parseMessage(full.data);
+}
+
 // --- Helpers ---
 function parseMessage(message: any) {
   const headers = message.payload?.headers || [];

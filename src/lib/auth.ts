@@ -22,18 +22,27 @@ export const authOptions: NextAuthOptions = {
             "https://www.googleapis.com/auth/calendar.events",
           ].join(" "),
           access_type: "offline",
-          prompt: "select_account",
+          prompt: "consent",
           redirect_uri: `${process.env.NEXTAUTH_URL || "https://ai-ops-tool-git-main-jeffismeandnotus-projects.vercel.app"}/api/auth/callback/google`,
         },
       },
     }),
   ],
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, profile }) {
       if (account) {
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
         token.expiresAt = account.expires_at;
+        const email = (profile as any)?.email || token.email;
+        if (account.refresh_token && email) {
+          try {
+            const { saveRefreshToken } = await import("@/lib/google-auth");
+            await saveRefreshToken(email as string, account.refresh_token);
+          } catch (e) {
+            console.error("Failed to persist refresh token:", e);
+          }
+        }
       }
       return token;
     },
