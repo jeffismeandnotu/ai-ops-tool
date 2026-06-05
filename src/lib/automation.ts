@@ -185,6 +185,9 @@ Before anything else, call classify_email(threadId, intent, confidence, risk) an
 - Complaints, or anything not covered by a rule: don't improvise — notify_owner and stop.
 - NEVER re-send information the customer already has. If you already sent availability and they picked a time from it, do NOT send availability again — validate their choice and proceed.
 - NEVER re-ask for information the customer already provided. Track what they've told you (name, address, service, date) and only ask for what's missing.
+- Before asking the customer for anything, check the WHAT WE ALREADY KNOW block injected with each inbound email. Never ask for a field that is already known. Ask only for genuinely missing required fields.
+- For known values you intend to use for a booking (especially address), confirm rather than assume — e.g. "I have your address as {address} — still correct?" Do not silently reuse without confirming.
+- Whenever the customer's email contains any new profile detail (name, phone, address, property type, bedrooms, bathrooms, pets, parking, service interest, recurring preference, preferred times, or special instructions), call save_client_info to persist it before you finish the turn. Do this at inquiry stage, not only at booking.
 
 === BOOKING = 3 PHASES (one instance per email thread) ===
 Every booking conversation moves through phase 0 -> 1 -> 2 -> 3. Call get_phase(threadId) FIRST — it returns the current phase number AND tells you exactly what to do. Follow its guidance.
@@ -753,6 +756,34 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         notes: { type: "string" },
       },
       required: ["clientId"],
+    },
+  },
+  {
+    name: "save_client_info",
+    description: "Persist any new profile details the customer revealed in this email. Call this whenever the email contains name, phone, address, property details, service interest, preferences, or special instructions — at inquiry stage, not only at booking. Merge semantics: only writes non-empty fields; never blanks existing values. Gate/lock codes are scrubbed automatically.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string", description: "Customer email (required)" },
+        name: { type: "string" },
+        firstName: { type: "string" },
+        lastName: { type: "string" },
+        phone: { type: "string" },
+        address: { type: "string" },
+        city: { type: "string" },
+        postalCode: { type: "string" },
+        propertyType: { type: "string", description: "house, apartment, condo, townhouse, cabin, office, etc." },
+        bedrooms: { type: "number" },
+        bathrooms: { type: "number" },
+        pets: { type: "string", description: "e.g. '2 dogs', 'cat', 'none'" },
+        parking: { type: "string", description: "parking/access instructions" },
+        accessNotes: { type: "string", description: "access details — do NOT include gate/lock codes, just 'has gate code' if relevant" },
+        serviceInterest: { type: "string", description: "which service(s) they asked about" },
+        recurring: { type: "string", description: "one-time, weekly, bi-weekly, monthly, or other frequency" },
+        preferredTimes: { type: "string", description: "preferred days/times" },
+        specialInstructions: { type: "string", description: "any special requests or notes" },
+      },
+      required: ["email"],
     },
   },
   {
@@ -1474,6 +1505,40 @@ async function executeTool(
         });
         return JSON.stringify({ success: true, client: updated });
       }
+      case "save_client_info": {
+        // Duplicate guard: if name+phone match a different email, flag for owner
+        if (input.name && input.phone) {
+          const dup = await clientsDb.findClientByNameAndPhone(input.name, input.phone);
+          if (dup && dup.email.toLowerCase() !== input.email.toLowerCase()) {
+            appendOperation({ type: "warning", details: `Possible duplicate customer: ${input.email} vs existing ${dup.email} (same name+phone)`, verified: false });
+            try {
+              await gmail.sendEmail(accessToken, [BUSINESS.owner.email],
+                `[NOTICE] Possible duplicate customer`,
+                `A new email (${input.email}) has the same name (${input.name}) and phone (${input.phone}) as existing client ${dup.email} (id: ${dup.id}). Please review and merge if needed.`);
+            } catch {}
+          }
+        }
+        const merged = await clientsDb.mergeUpsertClient(input.email, {
+          name: input.name,
+          firstName: input.firstName,
+          lastName: input.lastName,
+          phone: input.phone,
+          address: input.address,
+          city: input.city,
+          postalCode: input.postalCode,
+          propertyType: input.propertyType,
+          bedrooms: input.bedrooms,
+          bathrooms: input.bathrooms,
+          pets: input.pets,
+          parking: input.parking,
+          accessNotes: input.accessNotes,
+          serviceInterest: input.serviceInterest,
+          recurring: input.recurring,
+          preferredTimes: input.preferredTimes,
+          specialInstructions: input.specialInstructions,
+        });
+        return JSON.stringify({ success: true, client: merged });
+      }
       case "cancel_booking_record": {
         const booking = await clientsDb.getBookingByCalendarEvent(input.calendarEventId);
         if (booking) {
@@ -1710,6 +1775,50 @@ export async function runAutomationCycle(accessToken: string): Promise<{
 
     // Build the processing prompt with all unprocessed emails
     const senderEmails = new Set(unprocessed.map((e) => (e.from || "").toLowerCase()).filter(Boolean));
+
+    // Load client profiles for all senders (golden record)
+    const cronProfileBlocks: string[] = [];
+    for (const senderEmail of senderEmails) {
+      try {
+        const fromField = unprocessed.find((e) => (e.from || "").toLowerCase() === senderEmail)?.from || senderEmail;
+        const nameMatch = fromField.match(/^([^<]+)<.*>/);
+        const parsedName = nameMatch ? nameMatch[1].trim() : undefined;
+        await clientsDb.findOrCreateClient({ email: senderEmail, name: parsedName, source: "email" });
+        const profile = await clientsDb.getClientProfile(senderEmail);
+        if (profile) {
+          const c = profile.client;
+          const fields: string[] = [];
+          if (c.name && c.name !== senderEmail.split("@")[0]) fields.push(`Name: ${c.name}`);
+          if (c.phone) fields.push(`Phone: ${c.phone}`);
+          if (c.address) fields.push(`Address: ${c.address}`);
+          if (c.city) fields.push(`City: ${c.city}`);
+          if (c.postal_code) fields.push(`Postal code: ${c.postal_code}`);
+          if (c.property_type) fields.push(`Property type: ${c.property_type}`);
+          if (c.bedrooms) fields.push(`Bedrooms: ${c.bedrooms}`);
+          if (c.bathrooms) fields.push(`Bathrooms: ${c.bathrooms}`);
+          if (c.pets) fields.push(`Pets: ${c.pets}`);
+          if (c.parking) fields.push(`Parking: ${c.parking}`);
+          if (c.access_notes) fields.push(`Access notes: ${c.access_notes}`);
+          if (c.service_interest) fields.push(`Service interest: ${c.service_interest}`);
+          if (c.recurring) fields.push(`Recurring preference: ${c.recurring}`);
+          if (c.preferred_times) fields.push(`Preferred times: ${c.preferred_times}`);
+          if (c.special_instructions) fields.push(`Special instructions: ${c.special_instructions}`);
+          if (profile.bookingCount > 0) fields.push(`Past bookings: ${profile.bookingCount} (total spent: $${profile.totalSpent})`);
+          if (profile.recentBookings.length > 0) {
+            const last = profile.recentBookings[0];
+            fields.push(`Last booking: ${last.service_name} on ${last.date} — ${last.status}`);
+          }
+          if (profile.openInquiry) fields.push(`Open inquiry: ${profile.openInquiry.type} (${profile.openInquiry.status})`);
+          if (profile.latestQuote) fields.push(`Latest quote: ${profile.latestQuote.service_name} — $${profile.latestQuote.price} (${profile.latestQuote.status})`);
+          if (profile.activePhase) fields.push(`Active booking phase: ${profile.activePhase.phase} (thread: ${profile.activePhase.thread_id})`);
+          if (fields.length > 0) {
+            cronProfileBlocks.push(`<trusted-internal-data source="client-profile" email="${senderEmail}">\n=== WHAT WE ALREADY KNOW ABOUT THIS CUSTOMER (${senderEmail}) ===\nClient ID: ${c.id}\n${fields.join("\n")}\n</trusted-internal-data>`);
+          }
+        }
+      } catch {}
+    }
+    const cronProfileSection = cronProfileBlocks.length > 0 ? cronProfileBlocks.join("\n\n") + "\n\n" : "";
+
     const emailSummaries = unprocessed
       .map(
         (e, i) =>
@@ -1729,10 +1838,12 @@ IMPORTANT: When replying to this email, use threadId="${e.threadId}" and replyTo
       )
       .join("\n\n---\n\n");
 
-    const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
+    const userMessage = `${cronProfileSection}Process these ${unprocessed.length} new email(s). For EACH email:
 1. Call classify_email FIRST (intent, confidence, risk) using the "Thread" value as threadId, and follow the routing it returns. If it says ESCALATE, send one brief holding acknowledgement + notify_owner, then stop.
-2. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
-3. Send exactly one customer reply, then mark_email_done.
+2. If the customer's email reveals any new profile details (name, phone, address, property info, preferences), call save_client_info IMMEDIATELY to persist them.
+3. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
+4. Before asking the customer for anything, check the WHAT WE ALREADY KNOW block above. Only ask for fields that are genuinely missing. For known fields you need for a booking (especially address), confirm rather than assume.
+5. Send exactly one customer reply, then mark_email_done.
 
 EMAILS TO PROCESS:
 
@@ -1810,6 +1921,51 @@ export async function runAutomationForMessages(
   }
 
   const senderEmails = new Set(unprocessed.map((e: any) => (e.from || "").toLowerCase()).filter(Boolean));
+
+  // Load client profiles for all senders (golden record)
+  const profileBlocks: string[] = [];
+  for (const senderEmail of senderEmails) {
+    try {
+      // Ensure client record exists
+      const fromField = unprocessed.find((e: any) => (e.from || "").toLowerCase() === senderEmail)?.from || senderEmail;
+      const nameMatch = fromField.match(/^([^<]+)<.*>/);
+      const parsedName = nameMatch ? nameMatch[1].trim() : undefined;
+      await clientsDb.findOrCreateClient({ email: senderEmail, name: parsedName, source: "email" });
+      const profile = await clientsDb.getClientProfile(senderEmail);
+      if (profile) {
+        const c = profile.client;
+        const fields: string[] = [];
+        if (c.name && c.name !== senderEmail.split("@")[0]) fields.push(`Name: ${c.name}`);
+        if (c.phone) fields.push(`Phone: ${c.phone}`);
+        if (c.address) fields.push(`Address: ${c.address}`);
+        if (c.city) fields.push(`City: ${c.city}`);
+        if (c.postal_code) fields.push(`Postal code: ${c.postal_code}`);
+        if (c.property_type) fields.push(`Property type: ${c.property_type}`);
+        if (c.bedrooms) fields.push(`Bedrooms: ${c.bedrooms}`);
+        if (c.bathrooms) fields.push(`Bathrooms: ${c.bathrooms}`);
+        if (c.pets) fields.push(`Pets: ${c.pets}`);
+        if (c.parking) fields.push(`Parking: ${c.parking}`);
+        if (c.access_notes) fields.push(`Access notes: ${c.access_notes}`);
+        if (c.service_interest) fields.push(`Service interest: ${c.service_interest}`);
+        if (c.recurring) fields.push(`Recurring preference: ${c.recurring}`);
+        if (c.preferred_times) fields.push(`Preferred times: ${c.preferred_times}`);
+        if (c.special_instructions) fields.push(`Special instructions: ${c.special_instructions}`);
+        if (profile.bookingCount > 0) fields.push(`Past bookings: ${profile.bookingCount} (total spent: $${profile.totalSpent})`);
+        if (profile.recentBookings.length > 0) {
+          const last = profile.recentBookings[0];
+          fields.push(`Last booking: ${last.service_name} on ${last.date} — ${last.status}`);
+        }
+        if (profile.openInquiry) fields.push(`Open inquiry: ${profile.openInquiry.type} (${profile.openInquiry.status})`);
+        if (profile.latestQuote) fields.push(`Latest quote: ${profile.latestQuote.service_name} — $${profile.latestQuote.price} (${profile.latestQuote.status})`);
+        if (profile.activePhase) fields.push(`Active booking phase: ${profile.activePhase.phase} (thread: ${profile.activePhase.thread_id})`);
+        if (fields.length > 0) {
+          profileBlocks.push(`<trusted-internal-data source="client-profile" email="${senderEmail}">\n=== WHAT WE ALREADY KNOW ABOUT THIS CUSTOMER (${senderEmail}) ===\nClient ID: ${c.id}\n${fields.join("\n")}\n</trusted-internal-data>`);
+        }
+      }
+    } catch {}
+  }
+  const profileSection = profileBlocks.length > 0 ? profileBlocks.join("\n\n") + "\n\n" : "";
+
   const emailSummaries = unprocessed
     .map(
       (e: any, i: number) =>
@@ -1829,10 +1985,12 @@ IMPORTANT: When replying, use threadId="${e.threadId}" and replyToMessageId="${e
     )
     .join("\n\n---\n\n");
 
-  const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
+  const userMessage = `${profileSection}Process these ${unprocessed.length} new email(s). For EACH email:
 1. Call classify_email FIRST (intent, confidence, risk) using the "Thread" value as threadId, and follow the routing it returns. If it says ESCALATE, send one brief holding acknowledgement + notify_owner, then stop.
-2. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
-3. Send exactly one customer reply, then mark_email_done.
+2. If the customer's email reveals any new profile details (name, phone, address, property info, preferences), call save_client_info IMMEDIATELY to persist them.
+3. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
+4. Before asking the customer for anything, check the WHAT WE ALREADY KNOW block above. Only ask for fields that are genuinely missing. For known fields you need for a booking (especially address), confirm rather than assume.
+5. Send exactly one customer reply, then mark_email_done.
 
 EMAILS TO PROCESS:
 
