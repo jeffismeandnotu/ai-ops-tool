@@ -1,4 +1,5 @@
 import { neon } from "@neondatabase/serverless";
+import { logSecurityEvent } from "@/lib/security-log";
 
 function getDb() {
   return neon(process.env.DATABASE_URL!);
@@ -79,16 +80,19 @@ export interface GuardResult {
 export async function runAllGuards(sender: string): Promise<GuardResult> {
   const daily = await checkDailySpend();
   if (!daily.allowed) {
+    logSecurityEvent({ type: "spend_cap", severity: "critical", sender, details: `$${daily.spent}/$${daily.cap}` });
     return { allowed: false, reason: `Daily spend cap reached ($${daily.spent}/$${daily.cap})`, dailySpent: daily.spent };
   }
 
   const global = await checkGlobalCap();
   if (!global.allowed) {
+    logSecurityEvent({ type: "circuit_breaker", severity: "critical", details: `${global.count}/${global.cap} events/hr` });
     return { allowed: false, reason: `Global circuit breaker tripped (${global.count}/${global.cap} events/hr)`, globalCount: global.count };
   }
 
   const perSender = await checkSenderCap(sender);
   if (!perSender.allowed) {
+    logSecurityEvent({ type: "rate_limit_hit", severity: "warn", sender, details: `${perSender.count}/${perSender.cap}/hr` });
     return { allowed: false, reason: `Sender rate limit (${perSender.count}/${perSender.cap} per hour for ${sender})`, senderCount: perSender.count };
   }
 

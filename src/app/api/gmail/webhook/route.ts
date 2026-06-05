@@ -9,6 +9,7 @@ import {
 import { getAutomationEnabled } from "@/lib/app-settings";
 import { verifyCronSecret, verifyGmailPubSubToken } from "@/lib/webhook-verify";
 import { validatePubSubShape } from "@/lib/rate-limit";
+import { logSecurityEvent } from "@/lib/security-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,9 +18,12 @@ export const maxDuration = 300;
 const MAX_PAYLOAD_BYTES = 65536;
 
 export async function POST(req: NextRequest) {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+
   // 0. Payload size cap
   const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
   if (contentLength > MAX_PAYLOAD_BYTES) {
+    logSecurityEvent({ type: "payload_rejected", severity: "warn", ip, details: `${contentLength} bytes` });
     return NextResponse.json({ error: "Payload too large" }, { status: 413 });
   }
 
@@ -28,12 +32,14 @@ export async function POST(req: NextRequest) {
   const webhookSecret = process.env.GMAIL_WEBHOOK_SECRET;
   const secretValid = verifyCronSecret(secret) || (!!webhookSecret && !!secret && secret === webhookSecret);
   if (!secretValid) {
+    logSecurityEvent({ type: "auth_failure", severity: "critical", ip, source: "gmail_webhook", details: "Invalid shared secret" });
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // 1b. OIDC token verification (optional — enabled by setting GMAIL_PUBSUB_AUDIENCE).
   const oidc = await verifyGmailPubSubToken(req.headers.get("authorization"));
   if (!oidc.valid && process.env.GMAIL_PUBSUB_AUDIENCE) {
+    logSecurityEvent({ type: "oidc_failure", severity: "critical", ip, source: "gmail_webhook", details: oidc.reason });
     return NextResponse.json({ error: "OIDC verification failed" }, { status: 403 });
   }
 

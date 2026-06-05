@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { readOpsLog, readProcessedEmails, getOpsLogSummary, getUsageSummary } from "@/lib/ops-log";
 import { verifyCronSecret } from "@/lib/webhook-verify";
+import { getRecentSecurityEvents, getSecurityEventCounts } from "@/lib/security-log";
 
 export async function GET(req: NextRequest) {
   const fromHeader = req.headers.get("x-cron-secret");
@@ -26,6 +27,11 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ processed: await readProcessedEmails() });
       case "usage":
         return NextResponse.json({ usage: await getUsageSummary() });
+      case "security":
+        return NextResponse.json({
+          events: await getRecentSecurityEvents(),
+          counts: await getSecurityEventCounts(),
+        });
       case "all":
         return NextResponse.json({
           summary: await getOpsLogSummary(),

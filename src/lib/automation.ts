@@ -121,6 +121,7 @@ import * as bookingService from "@/lib/booking-service";
 import { validateOutboundFacts, servicesListEmail, quoteEmail, availabilityEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
 import { recordClassification, scanRisk } from "@/lib/triage";
 import { runAllGuards } from "@/lib/rate-guard";
+import { logSecurityEvent } from "@/lib/security-log";
 import * as waitlist from "@/lib/waitlist";
 import * as fs from "fs";
 import * as path from "path";
@@ -979,6 +980,7 @@ async function executeTool(
         }
         const disallowedRecips = (input.to || []).filter((a: string) => !isAllowedRecipient(a));
         if (disallowedRecips.length) {
+          logSecurityEvent({ type: "recipient_blocked", severity: "warn", details: `compose_and_send to ${disallowedRecips.join(", ")}` });
           return JSON.stringify({ success: false, blocked: true, error: `Recipient not allowed: ${disallowedRecips.join(", ")}. You may only reply to the original sender(s) of the inbound email.` });
         }
         const ccust = (input.to || []).filter(isCustomer);
@@ -1176,6 +1178,7 @@ async function executeTool(
         }
         const sendDisallowed = (input.to || []).filter((a: string) => !isAllowedRecipient(a));
         if (sendDisallowed.length) {
+          logSecurityEvent({ type: "recipient_blocked", severity: "warn", details: `send_email to ${sendDisallowed.join(", ")}` });
           return JSON.stringify({ success: false, blocked: true, error: `Recipient not allowed: ${sendDisallowed.join(", ")}. You may only reply to the original sender(s) of the inbound email.` });
         }
         const scust = (input.to || []).filter(isCustomer);
@@ -1245,6 +1248,7 @@ async function executeTool(
       }
       case "create_booking": {
         if (ctx.destructiveActionDone) {
+          logSecurityEvent({ type: "destructive_gate", severity: "warn", details: `Blocked duplicate ${toolName}` });
           return JSON.stringify({ success: false, blocked: true, error: "Only one booking/cancel/reschedule action is allowed per inbound message. mark_email_done and stop." });
         }
         // Phase gate — the thread must have reached phase 2 (client confirmed).
@@ -1312,6 +1316,7 @@ async function executeTool(
       }
       case "reschedule_booking": {
         if (ctx.destructiveActionDone) {
+          logSecurityEvent({ type: "destructive_gate", severity: "warn", details: `Blocked duplicate ${toolName}` });
           return JSON.stringify({ success: false, blocked: true, error: "Only one booking/cancel/reschedule action is allowed per inbound message. mark_email_done and stop." });
         }
         const r = await bookingService.rescheduleGuarded(accessToken, input.bookingId, input.newDate, input.newStartTime);
@@ -1328,6 +1333,7 @@ async function executeTool(
       }
       case "cancel_booking": {
         if (ctx.destructiveActionDone) {
+          logSecurityEvent({ type: "destructive_gate", severity: "warn", details: `Blocked duplicate ${toolName}` });
           return JSON.stringify({ success: false, blocked: true, error: "Only one booking/cancel/reschedule action is allowed per inbound message. mark_email_done and stop." });
         }
         const r = await bookingService.cancelGuarded(accessToken, input.bookingId, input.reason);
@@ -1693,6 +1699,10 @@ export async function runAutomationCycle(accessToken: string): Promise<{
         details: `Rate guard blocked: ${guard.reason}`,
         verified: true,
       });
+      try {
+        await gmail.sendEmail(accessToken, [BUSINESS.owner.email],
+          `[SECURITY] Rate guard triggered`, `Guard blocked processing: ${guard.reason}\n\nSender: ${primarySender}\nTime: ${new Date().toISOString()}`);
+      } catch {}
       return { processed: 0, actions: [`Blocked: ${guard.reason}`], errors: [guard.reason!] };
     }
 
@@ -1790,6 +1800,10 @@ export async function runAutomationForMessages(
       details: `Rate guard blocked (webhook): ${guard.reason}`,
       verified: true,
     });
+    try {
+      await gmail.sendEmail(accessToken, [BUSINESS.owner.email],
+        `[SECURITY] Rate guard triggered`, `Guard blocked processing: ${guard.reason}\n\nSender: ${primarySender}\nTime: ${new Date().toISOString()}`);
+    } catch {}
     return { processed: 0, actions: [`Blocked: ${guard.reason}`], errors: [guard.reason!] };
   }
 
