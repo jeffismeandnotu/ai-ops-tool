@@ -27,7 +27,6 @@ export async function POST(req: NextRequest) {
   if (body.reset) {
     const sql = getDb();
     await sql`DELETE FROM bookings WHERE true`;
-    await sql`DELETE FROM clients WHERE true`;
     await sql`DELETE FROM booking_phases WHERE true`;
     await sql`DELETE FROM processed_emails WHERE true`;
     return NextResponse.json({ ok: true, action: "reset" });
