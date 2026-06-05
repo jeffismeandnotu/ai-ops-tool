@@ -2,9 +2,10 @@
 // Verification suite — tests the ask-first booking flow + all scenarios.
 // Adds delays between tests to avoid API rate limiting.
 
-const BASE = "https://ai-ops-tool.vercel.app";
-const SECRET = "07356b2c0a763e1693274c5ed4cb7b3fb26a11ad";
-const CLIENT = "biggguy0047@gmail.com";
+const BASE = process.env.VERIFY_BASE_URL || "https://ai-ops-tool.vercel.app";
+const SECRET = process.env.CRON_SECRET;
+if (!SECRET) { console.error("Set CRON_SECRET env var before running."); process.exit(1); }
+const CLIENT = process.env.VERIFY_CLIENT_EMAIL || "biggguy0047@gmail.com";
 
 const results = [];
 function log(msg) { console.log(msg); }

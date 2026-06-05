@@ -53,7 +53,9 @@ export async function getRefreshToken(email: string): Promise<string | null> {
 // The single mailbox the automation runs on. Configured via env so the
 // webhook/cron know whose refresh token to use without a browser session.
 export function getOpsEmail(): string {
-  return process.env.OPS_GMAIL_ADDRESS || "aryanraman777@gmail.com";
+  const email = process.env.OPS_GMAIL_ADDRESS;
+  if (!email) throw new Error("OPS_GMAIL_ADDRESS environment variable is required");
+  return email;
 }
 
 // --- Mint a fresh access token from the stored refresh token ---

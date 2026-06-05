@@ -1,8 +1,6 @@
 import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
-const PROD_URL = "https://ai-ops-tool.vercel.app";
-
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
@@ -23,7 +21,7 @@ export const authOptions: NextAuthOptions = {
           ].join(" "),
           access_type: "offline",
           prompt: "consent",
-          redirect_uri: `${process.env.NEXTAUTH_URL || "https://ai-ops-tool-git-main-jeffismeandnotus-projects.vercel.app"}/api/auth/callback/google`,
+          ...(process.env.NEXTAUTH_URL ? { redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/callback/google` } : {}),
         },
       },
     }),
