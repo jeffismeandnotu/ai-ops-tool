@@ -120,6 +120,7 @@ import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
 import { validateOutboundFacts, servicesListEmail, quoteEmail, availabilityEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
 import { recordClassification, scanRisk } from "@/lib/triage";
+import { runAllGuards } from "@/lib/rate-guard";
 import * as waitlist from "@/lib/waitlist";
 import * as fs from "fs";
 import * as path from "path";
@@ -1683,6 +1684,18 @@ export async function runAutomationCycle(accessToken: string): Promise<{
       return { processed: 0, actions: ["No new emails"], errors: [] };
     }
 
+    // Rate / spend guards — check per-sender, global, and daily spend caps
+    const primarySender = (unprocessed[0]?.from || "unknown").toLowerCase();
+    const guard = await runAllGuards(primarySender);
+    if (!guard.allowed) {
+      appendOperation({
+        type: "error",
+        details: `Rate guard blocked: ${guard.reason}`,
+        verified: true,
+      });
+      return { processed: 0, actions: [`Blocked: ${guard.reason}`], errors: [guard.reason!] };
+    }
+
     // Build the processing prompt with all unprocessed emails
     const senderEmails = new Set(unprocessed.map((e) => (e.from || "").toLowerCase()).filter(Boolean));
     const emailSummaries = unprocessed
@@ -1766,6 +1779,18 @@ export async function runAutomationForMessages(
 
   if (unprocessed.length === 0) {
     return { processed: 0, actions: ["No new messages to process"], errors };
+  }
+
+  // Rate / spend guards
+  const primarySender = (unprocessed[0]?.from || "unknown").toLowerCase();
+  const guard = await runAllGuards(primarySender);
+  if (!guard.allowed) {
+    appendOperation({
+      type: "error",
+      details: `Rate guard blocked (webhook): ${guard.reason}`,
+      verified: true,
+    });
+    return { processed: 0, actions: [`Blocked: ${guard.reason}`], errors: [guard.reason!] };
   }
 
   const senderEmails = new Set(unprocessed.map((e: any) => (e.from || "").toLowerCase()).filter(Boolean));
