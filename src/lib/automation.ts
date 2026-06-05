@@ -148,6 +148,54 @@ function loadRules(): string {
 }
 
 // Injected after every tool result to force the read -> act -> verify cycle.
+async function buildProfileBlock(senderEmail: string, fromField: string): Promise<string | null> {
+  try {
+    const nameMatch = fromField.match(/^([^<]+)<.*>/);
+    const parsedName = nameMatch ? nameMatch[1].trim() : undefined;
+    await clientsDb.findOrCreateClient({ email: senderEmail, name: parsedName, source: "email" });
+    const profile = await clientsDb.getClientProfile(senderEmail);
+    if (!profile) return null;
+    const c = profile.client;
+    const known: string[] = [];
+    const missing: string[] = [];
+    const check = (label: string, val: any) => val ? known.push(`${label}: ${val}`) : missing.push(label);
+    check("Name", c.name && c.name !== senderEmail.split("@")[0] ? c.name : null);
+    check("Phone", c.phone);
+    check("Address", c.address);
+    if (c.city) known.push(`City: ${c.city}`);
+    if (c.postal_code) known.push(`Postal code: ${c.postal_code}`);
+    if (c.property_type) known.push(`Property type: ${c.property_type}`);
+    if (c.bedrooms) known.push(`Bedrooms: ${c.bedrooms}`);
+    if (c.bathrooms) known.push(`Bathrooms: ${c.bathrooms}`);
+    if (c.pets) known.push(`Pets: ${c.pets}`);
+    if (c.service_interest) known.push(`Service interest: ${c.service_interest}`);
+    if (c.recurring) known.push(`Recurring: ${c.recurring}`);
+    if (c.preferred_times) known.push(`Preferred times: ${c.preferred_times}`);
+    if (c.special_instructions) known.push(`Special instructions: ${c.special_instructions}`);
+    if (c.access_notes) known.push(`Access notes: ${c.access_notes}`);
+    if (c.parking) known.push(`Parking: ${c.parking}`);
+    if (profile.bookingCount > 0) known.push(`Past bookings: ${profile.bookingCount} ($${profile.totalSpent} total)`);
+    if (profile.recentBookings.length > 0) {
+      const last = profile.recentBookings[0];
+      known.push(`Last booking: ${last.service_name} on ${last.date} — ${last.status}`);
+    }
+    if (profile.openInquiry) known.push(`Open inquiry: ${profile.openInquiry.type} (${profile.openInquiry.status})`);
+    if (profile.latestQuote) known.push(`Latest quote: ${profile.latestQuote.service_name} — $${profile.latestQuote.price} (${profile.latestQuote.status})`);
+    if (profile.activePhase) known.push(`Active booking phase: ${profile.activePhase.phase}`);
+    if (known.length === 0) return null;
+    const lines = [
+      `<customer_profile email="${senderEmail}" client_id="${c.id}">`,
+      `CONFIRMED — do NOT re-ask for any of these:`,
+      ...known.map(f => `  ${f}`),
+    ];
+    if (missing.length > 0) {
+      lines.push(`UNKNOWN — you may ask for these if needed for the current operation:`, ...missing.map(f => `  ${f}`));
+    }
+    lines.push(`</customer_profile>`);
+    return lines.join("\n");
+  } catch { return null; }
+}
+
 const RULE_CHECK =
   "RULE CHECK: the rules are in your instructions above — no need to re-read them every step. Confirm the result above complies (price from catalog, slot from get_availability, required fields present, no off-policy discounts, complaints escalated, customer email only via compose_and_send). If it violated a rule, fix it before continuing. Gather read-only info freely, but make only ONE change (book/send/reschedule/cancel) per turn and verify it. STOP CONDITION: at most ONE customer email per inbound — once the customer's reply is sent, only record (create_inquiry/create_quote) and mark_email_done, then stop.";
 
@@ -184,10 +232,9 @@ Before anything else, call classify_email(threadId, intent, confidence, risk) an
 - Never email a business / "glowcleaning" address or invent one. Customers get their own address. To reach the owner use notify_owner (never type their address).
 - Complaints, or anything not covered by a rule: don't improvise — notify_owner and stop.
 - NEVER re-send information the customer already has. If you already sent availability and they picked a time from it, do NOT send availability again — validate their choice and proceed.
-- NEVER re-ask for information the customer already provided. Track what they've told you (name, address, service, date) and only ask for what's missing.
-- Before asking the customer for anything, check the WHAT WE ALREADY KNOW block injected with each inbound email. Never ask for a field that is already known. Ask only for genuinely missing required fields.
-- For known values you intend to use for a booking (especially address), confirm rather than assume — e.g. "I have your address as {address} — still correct?" Do not silently reuse without confirming.
-- Whenever the customer's email contains any new profile detail (name, phone, address, property type, bedrooms, bathrooms, pets, parking, service interest, recurring preference, preferred times, or special instructions), call save_client_info to persist it before you finish the turn. Do this at inquiry stage, not only at booking.
+- NEVER re-ask for a field marked CONFIRMED in the <customer_profile> block. Only ask for fields listed as UNKNOWN that are required for the current operation.
+- For confirmed values you need for a booking (especially address), briefly confirm — e.g. "I have your address as {address} — still correct?" Do not silently assume.
+- When calling find_or_create_client, pass ALL details from the email (name, phone, address, property info, preferences, etc.) so they get saved. The tool merges them into the stored profile automatically.
 
 === BOOKING = 3 PHASES (one instance per email thread) ===
 Every booking conversation moves through phase 0 -> 1 -> 2 -> 3. Call get_phase(threadId) FIRST — it returns the current phase number AND tells you exactly what to do. Follow its guidance.
@@ -692,7 +739,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   // --- Client Database Tools ---
   {
     name: "find_or_create_client",
-    description: "Look up a client by email. If they exist, returns their record and booking history. If not, creates a new record. Call this FIRST for every email — before booking, quoting, or responding. Returns missing fields that need to be asked for.",
+    description: "Look up or create a client by email AND save any new details from this email in one call. Returns the FULL client profile — every known field, open inquiry, latest quote, booking phase, and recent bookings. Check the returned profile: only ask the customer for fields that are null/empty AND required for the current operation. Never ask for a field that already has a value in the returned profile.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -704,6 +751,16 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         address: { type: "string", description: "Service address" },
         city: { type: "string", description: "City" },
         postalCode: { type: "string", description: "Postal code" },
+        propertyType: { type: "string", description: "house, apartment, condo, townhouse, cabin, office, etc." },
+        bedrooms: { type: "number" },
+        bathrooms: { type: "number" },
+        pets: { type: "string" },
+        parking: { type: "string" },
+        accessNotes: { type: "string", description: "access details — do NOT include gate/lock codes" },
+        serviceInterest: { type: "string" },
+        recurring: { type: "string", description: "one-time, weekly, bi-weekly, monthly" },
+        preferredTimes: { type: "string" },
+        specialInstructions: { type: "string" },
       },
       required: ["email"],
     },
@@ -1457,8 +1514,8 @@ async function executeTool(
       }
       // --- Client Database Tools ---
       case "find_or_create_client": {
-        const result = await clientsDb.findOrCreateClient({
-          email: input.email,
+        // Merge any new details from this email into the stored profile
+        await clientsDb.mergeUpsertClient(input.email, {
           name: input.name,
           firstName: input.firstName,
           lastName: input.lastName,
@@ -1466,16 +1523,48 @@ async function executeTool(
           address: input.address,
           city: input.city,
           postalCode: input.postalCode,
-          source: "email",
+          propertyType: input.propertyType,
+          bedrooms: input.bedrooms,
+          bathrooms: input.bathrooms,
+          pets: input.pets,
+          parking: input.parking,
+          accessNotes: input.accessNotes,
+          serviceInterest: input.serviceInterest,
+          recurring: input.recurring,
+          preferredTimes: input.preferredTimes,
+          specialInstructions: input.specialInstructions,
         });
-        // Also get booking history for returning clients
-        const history = await clientsDb.getClientBookings(result.client.id);
+        // Return the full consolidated profile
+        const profile = await clientsDb.getClientProfile(input.email);
+        if (!profile) return JSON.stringify({ error: "Failed to load client profile" });
+        const c = profile.client;
         return JSON.stringify({
-          client: result.client,
-          isNewClient: result.created,
-          missingFields: result.missingFields,
-          bookingHistory: history.slice(0, 5),
-          totalBookings: history.length,
+          clientId: c.id,
+          email: c.email,
+          name: c.name,
+          firstName: c.first_name,
+          lastName: c.last_name,
+          phone: c.phone,
+          address: c.address,
+          city: c.city,
+          postalCode: c.postal_code,
+          propertyType: c.property_type,
+          bedrooms: c.bedrooms,
+          bathrooms: c.bathrooms,
+          pets: c.pets,
+          parking: c.parking,
+          accessNotes: c.access_notes,
+          serviceInterest: c.service_interest,
+          recurring: c.recurring,
+          preferredTimes: c.preferred_times,
+          specialInstructions: c.special_instructions,
+          openInquiry: profile.openInquiry,
+          latestQuote: profile.latestQuote,
+          activePhase: profile.activePhase,
+          recentBookings: profile.recentBookings.slice(0, 5),
+          bookingCount: profile.bookingCount,
+          totalSpent: profile.totalSpent,
+          note: "This is the COMPLETE client profile. Only ask for fields that are null AND required for your current operation. For address: confirm it ('I have your address as X — still correct?') rather than re-asking.",
         }, null, 2);
       }
       case "create_booking_record": {
@@ -1776,46 +1865,12 @@ export async function runAutomationCycle(accessToken: string): Promise<{
     // Build the processing prompt with all unprocessed emails
     const senderEmails = new Set(unprocessed.map((e) => (e.from || "").toLowerCase()).filter(Boolean));
 
-    // Load client profiles for all senders (golden record)
+    // Load client profiles for all senders
     const cronProfileBlocks: string[] = [];
     for (const senderEmail of senderEmails) {
-      try {
-        const fromField = unprocessed.find((e) => (e.from || "").toLowerCase() === senderEmail)?.from || senderEmail;
-        const nameMatch = fromField.match(/^([^<]+)<.*>/);
-        const parsedName = nameMatch ? nameMatch[1].trim() : undefined;
-        await clientsDb.findOrCreateClient({ email: senderEmail, name: parsedName, source: "email" });
-        const profile = await clientsDb.getClientProfile(senderEmail);
-        if (profile) {
-          const c = profile.client;
-          const fields: string[] = [];
-          if (c.name && c.name !== senderEmail.split("@")[0]) fields.push(`Name: ${c.name}`);
-          if (c.phone) fields.push(`Phone: ${c.phone}`);
-          if (c.address) fields.push(`Address: ${c.address}`);
-          if (c.city) fields.push(`City: ${c.city}`);
-          if (c.postal_code) fields.push(`Postal code: ${c.postal_code}`);
-          if (c.property_type) fields.push(`Property type: ${c.property_type}`);
-          if (c.bedrooms) fields.push(`Bedrooms: ${c.bedrooms}`);
-          if (c.bathrooms) fields.push(`Bathrooms: ${c.bathrooms}`);
-          if (c.pets) fields.push(`Pets: ${c.pets}`);
-          if (c.parking) fields.push(`Parking: ${c.parking}`);
-          if (c.access_notes) fields.push(`Access notes: ${c.access_notes}`);
-          if (c.service_interest) fields.push(`Service interest: ${c.service_interest}`);
-          if (c.recurring) fields.push(`Recurring preference: ${c.recurring}`);
-          if (c.preferred_times) fields.push(`Preferred times: ${c.preferred_times}`);
-          if (c.special_instructions) fields.push(`Special instructions: ${c.special_instructions}`);
-          if (profile.bookingCount > 0) fields.push(`Past bookings: ${profile.bookingCount} (total spent: $${profile.totalSpent})`);
-          if (profile.recentBookings.length > 0) {
-            const last = profile.recentBookings[0];
-            fields.push(`Last booking: ${last.service_name} on ${last.date} — ${last.status}`);
-          }
-          if (profile.openInquiry) fields.push(`Open inquiry: ${profile.openInquiry.type} (${profile.openInquiry.status})`);
-          if (profile.latestQuote) fields.push(`Latest quote: ${profile.latestQuote.service_name} — $${profile.latestQuote.price} (${profile.latestQuote.status})`);
-          if (profile.activePhase) fields.push(`Active booking phase: ${profile.activePhase.phase} (thread: ${profile.activePhase.thread_id})`);
-          if (fields.length > 0) {
-            cronProfileBlocks.push(`<trusted-internal-data source="client-profile" email="${senderEmail}">\n=== WHAT WE ALREADY KNOW ABOUT THIS CUSTOMER (${senderEmail}) ===\nClient ID: ${c.id}\n${fields.join("\n")}\n</trusted-internal-data>`);
-          }
-        }
-      } catch {}
+      const fromField = unprocessed.find((e) => (e.from || "").toLowerCase() === senderEmail)?.from || senderEmail;
+      const block = await buildProfileBlock(senderEmail, fromField);
+      if (block) cronProfileBlocks.push(block);
     }
     const cronProfileSection = cronProfileBlocks.length > 0 ? cronProfileBlocks.join("\n\n") + "\n\n" : "";
 
@@ -1922,47 +1977,12 @@ export async function runAutomationForMessages(
 
   const senderEmails = new Set(unprocessed.map((e: any) => (e.from || "").toLowerCase()).filter(Boolean));
 
-  // Load client profiles for all senders (golden record)
+  // Load client profiles for all senders
   const profileBlocks: string[] = [];
   for (const senderEmail of senderEmails) {
-    try {
-      // Ensure client record exists
-      const fromField = unprocessed.find((e: any) => (e.from || "").toLowerCase() === senderEmail)?.from || senderEmail;
-      const nameMatch = fromField.match(/^([^<]+)<.*>/);
-      const parsedName = nameMatch ? nameMatch[1].trim() : undefined;
-      await clientsDb.findOrCreateClient({ email: senderEmail, name: parsedName, source: "email" });
-      const profile = await clientsDb.getClientProfile(senderEmail);
-      if (profile) {
-        const c = profile.client;
-        const fields: string[] = [];
-        if (c.name && c.name !== senderEmail.split("@")[0]) fields.push(`Name: ${c.name}`);
-        if (c.phone) fields.push(`Phone: ${c.phone}`);
-        if (c.address) fields.push(`Address: ${c.address}`);
-        if (c.city) fields.push(`City: ${c.city}`);
-        if (c.postal_code) fields.push(`Postal code: ${c.postal_code}`);
-        if (c.property_type) fields.push(`Property type: ${c.property_type}`);
-        if (c.bedrooms) fields.push(`Bedrooms: ${c.bedrooms}`);
-        if (c.bathrooms) fields.push(`Bathrooms: ${c.bathrooms}`);
-        if (c.pets) fields.push(`Pets: ${c.pets}`);
-        if (c.parking) fields.push(`Parking: ${c.parking}`);
-        if (c.access_notes) fields.push(`Access notes: ${c.access_notes}`);
-        if (c.service_interest) fields.push(`Service interest: ${c.service_interest}`);
-        if (c.recurring) fields.push(`Recurring preference: ${c.recurring}`);
-        if (c.preferred_times) fields.push(`Preferred times: ${c.preferred_times}`);
-        if (c.special_instructions) fields.push(`Special instructions: ${c.special_instructions}`);
-        if (profile.bookingCount > 0) fields.push(`Past bookings: ${profile.bookingCount} (total spent: $${profile.totalSpent})`);
-        if (profile.recentBookings.length > 0) {
-          const last = profile.recentBookings[0];
-          fields.push(`Last booking: ${last.service_name} on ${last.date} — ${last.status}`);
-        }
-        if (profile.openInquiry) fields.push(`Open inquiry: ${profile.openInquiry.type} (${profile.openInquiry.status})`);
-        if (profile.latestQuote) fields.push(`Latest quote: ${profile.latestQuote.service_name} — $${profile.latestQuote.price} (${profile.latestQuote.status})`);
-        if (profile.activePhase) fields.push(`Active booking phase: ${profile.activePhase.phase} (thread: ${profile.activePhase.thread_id})`);
-        if (fields.length > 0) {
-          profileBlocks.push(`<trusted-internal-data source="client-profile" email="${senderEmail}">\n=== WHAT WE ALREADY KNOW ABOUT THIS CUSTOMER (${senderEmail}) ===\nClient ID: ${c.id}\n${fields.join("\n")}\n</trusted-internal-data>`);
-        }
-      }
-    } catch {}
+    const fromField = unprocessed.find((e: any) => (e.from || "").toLowerCase() === senderEmail)?.from || senderEmail;
+    const block = await buildProfileBlock(senderEmail, fromField);
+    if (block) profileBlocks.push(block);
   }
   const profileSection = profileBlocks.length > 0 ? profileBlocks.join("\n\n") + "\n\n" : "";
 
