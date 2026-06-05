@@ -3,6 +3,7 @@ import * as gmail from "@/lib/gmail";
 import { runAutomationForMessages } from "@/lib/automation";
 import { getFreshAccessToken, getOpsEmail } from "@/lib/google-auth";
 import * as clientsDb from "@/lib/clients-db";
+import * as calendar from "@/lib/calendar";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +36,22 @@ export async function POST(req: NextRequest) {
     if (body.reset) {
       const removed = await clientsDb.deleteFutureBookingsForEmail(from);
       return NextResponse.json({ ok: true, reset: true, removedBookings: removed });
+    }
+
+    // Optional: snapshot the real Google Calendar (next 30 days).
+    if (body.calendar) {
+      const now = new Date();
+      const max = new Date(now.getTime() + 30 * 86_400_000);
+      const events = await calendar.listEvents(accessToken, now.toISOString(), max.toISOString());
+      return NextResponse.json({
+        ok: true,
+        events: events.map((e: any) => ({
+          id: e.id,
+          summary: e.summary,
+          start: e.start?.dateTime || e.start?.date,
+          end: e.end?.dateTime || e.end?.date,
+        })),
+      });
     }
 
     // 1. Inject a realistic inbound email into the ops inbox.
