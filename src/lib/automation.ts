@@ -727,10 +727,10 @@ async function executeTool(
           risk,
           reason: input.reason,
         });
-        const mustEscalate =
-          risk === "high" ||
-          confidence < 0.6 ||
-          ["complaint", "payment", "human_requested", "ambiguous"].includes(intent);
+        const isRoutineAction = ["cancellation", "reschedule", "booking_confirmation", "post_booking_change"].includes(intent);
+        const mustEscalate = isRoutineAction
+          ? (confidence < 0.4 || ["complaint", "payment", "human_requested", "ambiguous"].includes(intent))
+          : (risk === "high" || confidence < 0.6 || ["complaint", "payment", "human_requested", "ambiguous"].includes(intent));
         if (mustEscalate) {
           return JSON.stringify({
             recorded: true,
