@@ -210,6 +210,26 @@ Price: \${{price}} CAD
     },
   },
 
+  // --- Pricing policy ---
+  // Contract / volume pricing is a real, owner-approved FEATURE — never a
+  // discount the AI invents. The AI offers it from this fixed rule and the
+  // owner sets the actual rate.
+  pricing: {
+    contract: {
+      enabled: true,
+      // Signals in a customer email that mean "offer contract pricing".
+      triggers: [
+        "recurring", "weekly", "bi-weekly", "biweekly", "daily", "ongoing",
+        "regular", "commercial", "office", "multiple", "several units",
+        "contract", "monthly", "every week", "each week",
+      ],
+      // The EXACT line the AI uses. It never invents a contract number.
+      line:
+        "For recurring or commercial work we also offer custom contract pricing — I'll loop in our owner to put together a tailored rate for your schedule.",
+      escalateToOwner: true,
+    },
+  },
+
   // --- Calendar Settings ---
   calendar: {
     bufferMinutes: 30,
