@@ -266,3 +266,36 @@ function parseMessage(message: any) {
     labelIds: message.labelIds || [],
   };
 }
+
+// --- Test helpers (inject a realistic inbound + read the latest sent reply) ---
+export async function insertInbound(
+  accessToken: string,
+  opts: { from: string; to: string; subject: string; body: string }
+) {
+  const gmail = getGmailClient(accessToken);
+  const headers = [
+    `From: ${opts.from}`,
+    `To: ${opts.to}`,
+    `Subject: ${opts.subject}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <test-${Date.now()}@gmail.com>`,
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    opts.body,
+  ].join("\r\n");
+  const raw = Buffer.from(headers).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const res = await gmail.users.messages.insert({
+    userId: "me",
+    requestBody: { raw, labelIds: ["INBOX", "UNREAD"] },
+  });
+  return res.data; // { id, threadId }
+}
+
+export async function getLatestSent(accessToken: string) {
+  const gmail = getGmailClient(accessToken);
+  const list = await gmail.users.messages.list({ userId: "me", q: "in:sent", maxResults: 1 });
+  const id = list.data.messages?.[0]?.id;
+  if (!id) return null;
+  const full = await gmail.users.messages.get({ userId: "me", id, format: "full" });
+  return parseMessage(full.data);
+}
