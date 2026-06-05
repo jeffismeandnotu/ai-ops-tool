@@ -1,51 +1,32 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import fs from "fs";
-import path from "path";
+import { getRefreshToken } from "@/lib/google-auth";
 
-const TOKEN_FILE = path.join(process.cwd(), "data", "token.json");
+// Refresh tokens are now persisted to Neon on login (via the NextAuth
+// jwt callback). This endpoint is kept for the dashboard to check
+// whether a token exists — no filesystem writes.
 
-// After first login, save the refresh token so the cron can use it
-// without a browser session active.
-export async function POST(req: NextRequest) {
+export async function POST() {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  const accessToken = (session as any).accessToken;
-  if (!accessToken) {
-    return NextResponse.json({ error: "No access token" }, { status: 401 });
-  }
-
-  const dir = path.dirname(TOKEN_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  fs.writeFileSync(
-    TOKEN_FILE,
-    JSON.stringify(
-      {
-        accessToken,
-        savedAt: new Date().toISOString(),
-        email: session.user?.email,
-      },
-      null,
-      2
-    )
-  );
-
-  return NextResponse.json({ success: true, message: "Token saved for automation." });
+  return NextResponse.json({ success: true, message: "Refresh token is stored in the database on login. No action needed." });
 }
 
 export async function GET() {
-  if (!fs.existsSync(TOKEN_FILE)) {
+  const session = await getServerSession(authOptions);
+  if (!session) {
     return NextResponse.json({ hasToken: false });
   }
-  const data = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf-8"));
+  const email = session.user?.email;
+  if (!email) {
+    return NextResponse.json({ hasToken: false });
+  }
+  const token = await getRefreshToken(email);
   return NextResponse.json({
-    hasToken: true,
-    email: data.email,
-    savedAt: data.savedAt,
+    hasToken: !!token,
+    email,
   });
 }
