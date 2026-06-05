@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getAutomationEnabled, setAutomationEnabled } from "@/lib/app-settings";
+import { verifyCronSecret } from "@/lib/webhook-verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function authorized(req: NextRequest): Promise<boolean> {
-  const secret = req.nextUrl.searchParams.get("secret");
-  if (secret && secret === process.env.CRON_SECRET) return true;
+  const fromHeader = req.headers.get("x-cron-secret");
+  const fromQuery = req.nextUrl.searchParams.get("secret");
+  if (verifyCronSecret(fromHeader) || verifyCronSecret(fromQuery)) return true;
   const session = await getServerSession(authOptions);
   return !!session;
 }

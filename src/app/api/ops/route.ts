@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { readOpsLog, readProcessedEmails, getOpsLogSummary, getUsageSummary } from "@/lib/ops-log";
+import { verifyCronSecret } from "@/lib/webhook-verify";
 
 export async function GET(req: NextRequest) {
-  const secret = req.nextUrl.searchParams.get("secret");
-  const hasSecret = !!secret && secret === process.env.CRON_SECRET;
-  if (!hasSecret) {
+  const fromHeader = req.headers.get("x-cron-secret");
+  const fromQuery = req.nextUrl.searchParams.get("secret");
+  if (!verifyCronSecret(fromHeader) && !verifyCronSecret(fromQuery)) {
     const session = await getServerSession(authOptions);
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

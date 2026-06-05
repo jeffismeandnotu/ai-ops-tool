@@ -7,6 +7,7 @@ import {
   saveWatchState,
 } from "@/lib/google-auth";
 import { getAutomationEnabled } from "@/lib/app-settings";
+import { verifyCronSecret, verifyGmailPubSubToken } from "@/lib/webhook-verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,10 +23,16 @@ export const maxDuration = 300;
 // ============================================================
 
 export async function POST(req: NextRequest) {
-  // 1. Auth — shared secret in the push endpoint URL.
+  // 1a. Shared secret (timing-safe comparison).
   const secret = req.nextUrl.searchParams.get("secret");
-  if (!secret || secret !== process.env.GMAIL_WEBHOOK_SECRET) {
+  if (!verifyCronSecret(secret) && secret !== process.env.GMAIL_WEBHOOK_SECRET) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 1b. OIDC token verification (optional — enabled by setting GMAIL_PUBSUB_AUDIENCE).
+  const oidc = await verifyGmailPubSubToken(req.headers.get("authorization"));
+  if (!oidc.valid && process.env.GMAIL_PUBSUB_AUDIENCE) {
+    return NextResponse.json({ error: "OIDC verification failed" }, { status: 403 });
   }
 
   let emailAddress = "";
