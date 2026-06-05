@@ -227,6 +227,41 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "create_inquiry",
+    description:
+      "Record an inbound customer email as a structured inquiry. Call this once per business email you handle, before responding.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        threadId: { type: "string" },
+        gmailMessageId: { type: "string" },
+        clientId: { type: "string" },
+        type: { type: "string", description: "BOOKING_REQUEST | INQUIRY | RESCHEDULE | CANCELLATION | INFO | COMPLAINT | BILLING | EMPLOYEE_INTERNAL | VENDOR | SPAM" },
+        summary: { type: "string" },
+        requestedServiceId: { type: "string" },
+        requestedDate: { type: "string" },
+        requestedWindow: { type: "string" },
+        address: { type: "string" },
+        rawExcerpt: { type: "string" },
+      },
+      required: ["type"],
+    },
+  },
+  {
+    name: "create_quote",
+    description:
+      "Record a quote you sent. Price is taken from the catalog by service_id — do not pass a price.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        inquiryId: { type: "string" },
+        clientId: { type: "string" },
+        serviceId: { type: "string" },
+      },
+      required: ["serviceId"],
+    },
+  },
+  {
     name: "search_emails",
     description: "Search Gmail for emails matching a query.",
     input_schema: {
@@ -307,19 +342,23 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_booking",
-    description: "Create a calendar event for a booking.",
+    description:
+      "Create a booking. Re-checks the slot is free, takes price/duration from the catalog by service_id, writes the booking to the database (source of truth) AND mirrors it to Google Calendar in one step. Returns confirmed details, or {success:false, alternatives} if the slot is taken. Call find_or_create_client first for clientId, and get_availability to pick a free startTime. Do NOT call create_booking_record after this — it already records to the database.",
     input_schema: {
       type: "object" as const,
       properties: {
-        summary: { type: "string" },
-        description: { type: "string" },
-        location: { type: "string" },
-        startTime: { type: "string" },
-        endTime: { type: "string" },
-        attendeeEmails: { type: "array", items: { type: "string" } },
-        colorId: { type: "string" },
+        clientId: { type: "string" },
+        serviceId: { type: "string", description: "From list_services" },
+        date: { type: "string", description: "YYYY-MM-DD" },
+        startTime: { type: "string", description: "HH:MM (24h, business local time)" },
+        address: { type: "string" },
+        clientName: { type: "string" },
+        clientEmail: { type: "string" },
+        employeeName: { type: "string" },
+        employeeEmail: { type: "string" },
+        notes: { type: "string" },
       },
-      required: ["summary", "startTime", "endTime"],
+      required: ["clientId", "serviceId", "date", "startTime", "address"],
     },
   },
   {
@@ -522,6 +561,33 @@ async function executeTool(
         const result = await availability.getAvailability(input.date, input.service_id);
         return JSON.stringify(result, null, 2);
       }
+      case "create_inquiry": {
+        const inq = await clientsDb.createInquiry({
+          threadId: input.threadId,
+          gmailMessageId: input.gmailMessageId,
+          clientId: input.clientId,
+          type: input.type,
+          summary: input.summary,
+          requestedServiceId: input.requestedServiceId,
+          requestedDate: input.requestedDate,
+          requestedWindow: input.requestedWindow,
+          address: input.address,
+          rawExcerpt: input.rawExcerpt,
+        });
+        return JSON.stringify({ success: true, inquiryId: inq.id });
+      }
+      case "create_quote": {
+        const svc = catalog.getService(input.serviceId);
+        if (!svc) return JSON.stringify({ error: `Unknown service_id '${input.serviceId}'` });
+        const q = await clientsDb.createQuote({
+          inquiryId: input.inquiryId,
+          clientId: input.clientId,
+          serviceId: svc.id,
+          serviceName: svc.name,
+          price: svc.price,
+        });
+        return JSON.stringify({ success: true, quoteId: q.id, price: svc.price });
+      }
       case "search_emails": {
         const threads = await gmail.searchEmails(accessToken, input.query, input.maxResults || 10);
         return JSON.stringify(threads.slice(0, 10), null, 2);
@@ -588,23 +654,28 @@ async function executeTool(
         return JSON.stringify(slots, null, 2);
       }
       case "create_booking": {
-        const event = await calendar.createEvent(accessToken, {
-          summary: input.summary,
-          description: input.description,
-          location: input.location,
+        const r = await bookingService.createBookingGuarded(accessToken, {
+          clientId: input.clientId,
+          clientEmail: input.clientEmail,
+          clientName: input.clientName,
+          serviceId: input.serviceId,
+          date: input.date,
           startTime: input.startTime,
-          endTime: input.endTime,
-          attendeeEmails: input.attendeeEmails,
-          colorId: input.colorId,
-          reminders: [{ method: "email", minutes: 60 }, { method: "popup", minutes: 30 }],
+          address: input.address,
+          employeeName: input.employeeName,
+          employeeEmail: input.employeeEmail,
+          notes: input.notes,
         });
+        if (!r.ok) {
+          return JSON.stringify({ success: false, reason: r.reason, alternatives: r.alternatives || [] });
+        }
         await appendOperation({
           type: "booking_created",
-          calendarEventId: event.id || undefined,
-          details: `Created booking: ${input.summary} at ${input.startTime}`,
+          calendarEventId: r.calendarEventId || undefined,
+          details: `Booking ${r.bookingId}: ${r.service.name} on ${input.date} ${r.start}-${r.end} for $${r.service.price}`,
           verified: true,
         });
-        return JSON.stringify({ success: true, eventId: event.id, link: event.htmlLink });
+        return JSON.stringify({ success: true, bookingId: r.bookingId, calendarEventId: r.calendarEventId, service: r.service, date: input.date, start: r.start, end: r.end });
       }
       case "update_booking": {
         const updated = await calendar.updateEvent(accessToken, input.eventId, {
@@ -687,21 +758,10 @@ async function executeTool(
         }, null, 2);
       }
       case "create_booking_record": {
-        const booking = await clientsDb.createBooking({
-          clientId: input.clientId,
-          serviceId: input.serviceId,
-          serviceName: input.serviceName,
-          price: input.price,
-          date: input.date,
-          time: input.time,
-          duration: input.duration,
-          address: input.address,
-          employeeName: input.employeeName,
-          employeeEmail: input.employeeEmail,
-          calendarEventId: input.calendarEventId,
-          notes: input.notes,
-        });
-        return JSON.stringify({ success: true, bookingId: booking.id });
+        // No-op: create_booking already writes the DB row (source of truth)
+        // and mirrors to Calendar. A second insert here would duplicate the
+        // booking and corrupt availability, so we don't.
+        return JSON.stringify({ success: true, note: "Already recorded by create_booking — no separate record needed." });
       }
       case "get_client_history": {
         const history = await clientsDb.getClientHistory(input.email);
