@@ -26,10 +26,14 @@ export async function POST(req: NextRequest) {
   // --- Reset test state ---
   if (body.reset) {
     const sql = getDb();
-    await sql`DELETE FROM bookings WHERE true`;
-    await sql`DELETE FROM booking_phases WHERE true`;
-    await sql`DELETE FROM processed_emails WHERE true`;
-    return NextResponse.json({ ok: true, action: "reset" });
+    const log: string[] = [];
+    try { await sql`DELETE FROM bookings WHERE true`; log.push("bookings"); }
+    catch (e: any) { log.push(`bookings:ERR:${e.message?.slice(0, 80)}`); }
+    try { await sql`DELETE FROM booking_phases WHERE true`; log.push("booking_phases"); }
+    catch (e: any) { log.push(`booking_phases:ERR:${e.message?.slice(0, 80)}`); }
+    try { await sql`DELETE FROM processed_emails WHERE true`; log.push("processed_emails"); }
+    catch (e: any) { log.push(`processed_emails:ERR:${e.message?.slice(0, 80)}`); }
+    return NextResponse.json({ ok: true, action: "reset", log });
   }
 
   // --- Clear calendar ---
