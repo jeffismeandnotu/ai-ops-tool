@@ -1026,11 +1026,12 @@ async function executeTool(
             verified: true,
           });
           return JSON.stringify({
-            success: false,
+            success: true,
+            cancelled: false,
             feeApplies: true,
-            notCancelled: true,
             hoursUntil: Math.round(r.hoursUntil || 0),
-            reason: "Within the cancellation notice window. Do NOT cancel. Send the customer template 'cancellation_fee_notice' and notify the owner. Leave the booking in place.",
+            instruction:
+              "This is NOT an error. The appointment is within the 24h notice window, so the booking was deliberately left ACTIVE (not cancelled). Do exactly two things and nothing else: (1) compose_and_send to the customer with template 'cancellation_fee_notice' and this bookingId — tell them a fee applies and the owner will follow up; do NOT tell them it is cancelled. (2) notify_owner about the same-day cancellation request. Do not call cancel_booking again.",
           });
         }
         if (!r.ok) {
