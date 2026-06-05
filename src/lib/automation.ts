@@ -1019,7 +1019,7 @@ ${emailSummaries}`;
       { role: "user", content: userMessage },
     ];
 
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       const response = await client.messages.create({
         model: BUSINESS.ai.model,
         max_tokens: 4096,
@@ -1142,7 +1142,7 @@ ${emailSummaries}`;
   ];
 
   try {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       const response = await client.messages.create({
         model: BUSINESS.ai.model,
         max_tokens: 4096,
