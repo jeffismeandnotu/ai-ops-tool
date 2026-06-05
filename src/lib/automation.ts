@@ -114,6 +114,7 @@ import {
 } from "@/lib/ops-log";
 import * as clientsDb from "@/lib/clients-db";
 import { getAutomationEnabled } from "@/lib/app-settings";
+import { getPhase, setPhase } from "@/lib/booking-phases";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
@@ -151,115 +152,53 @@ export type EmailClassification =
 // --- The Automation System Prompt ---
 async function buildAutomationPrompt(): Promise<string> {
   const opsContext = await getOpsLogSummary();
-  const rules = loadRules();
+  const maxPrice = Math.max(...BUSINESS.services.map((s) => s.price));
 
-  return `You are the AUTONOMOUS operations AI for ${BUSINESS.name}.
+  return `You are the autonomous email operations AI for ${BUSINESS.name}. You process inbound emails automatically — no human is reading your replies before they go out.
 
-YOU ARE NOT CHATTING WITH A HUMAN. You are processing emails automatically.
+=== HARD RULES (always) ===
+- Facts come from tools, never from you. Price/duration: list_services or get_service (use the exact catalog price). Times: get_availability (only offer slots it returns). Never invent a price or time — outbound is blocked if you do.
+- ONE customer email per inbound message. Always send it with compose_and_send (templates: quote | booking_confirmation | missing_info | reschedule | cancellation | cancellation_fee_notice) — the template writes the body, you just pass the data. After that one reply, call mark_email_done and stop.
+- Reply in-thread: pass threadId and replyToMessageId on every send.
+- Never email a business / "glowcleaning" address or invent one. Customers get their own address. To reach the owner use notify_owner (never type their address).
+- Complaints, or anything not covered by a rule: don't improvise — notify_owner and stop.
 
-=== MANDATORY RULES (read before every action) ===
-${rules}
-=== END RULES ===
+=== BOOKING = 3 PHASES (one instance per email thread) ===
+Every booking conversation moves through phase 1 -> 2 -> 3. A phase must be marked complete before the next begins. ALWAYS call get_phase(threadId) FIRST and do only the current phase's work.
 
-YOUR PROTOCOL:
-1. Read the ops log context below to know what's already been handled.
-2. For each email, classify it and execute the correct workflow.
-3. VERIFY before every action:
-   - Check ops log: was this email already processed? If yes, SKIP.
-   - Check calendar: is the slot actually free before booking?
-   - Check details: are ALL required fields present before confirming?
-4. After every action, call log_operation to record what you did.
-5. After all actions, call mark_email_done to prevent reprocessing.
+PHASE 1 — TALK:
+Be helpful and informative. Work out which service they want (get_service / list_services for the price, get_availability for real free times) and answer their questions. Then ask if they'd like to go ahead: send compose_and_send template "quote" with the service, exact catalog price, and 2–3 available times. Call mark_phase_complete(1, threadId). STOP — do not book. (Sending the quote marks phase 1 as well.)
 
-=== BOOKING WORKFLOW — FOLLOW THESE STAGES IN ORDER, NEVER SKIP AHEAD ===
-A booking is only ever created AFTER the client has explicitly confirmed. On a client's first message you only ever do Stage 1 and Stage 2, then stop.
+PHASE 2 — CONFIRM (only once the client replies accepting a time):
+Read their confirmation. Call get_required_booking_fields and check you have every one: client name, client email, service, date, time, address. If any is missing, send template "missing_info" asking for it and stop. When all are present, call mark_phase_complete(2, threadId), then go straight to phase 3.
 
-STAGE 1 — GATHER INFORMATION (nothing else):
-Work out which service the client wants and collect what you need to respond. Use READ-ONLY tools only: get_service / list_services (price from the catalog) AND get_availability (real free slots from the database — always pull these so you can offer times). Do not book, do not promise anything. Only send a missing_info email if you genuinely cannot tell which service they want. You do NOT need the customer to supply a date — you offer available slots to them.
+PHASE 3 — BOOK:
+find_or_create_client to get clientId, then create_booking with { clientConfirmed:true, confirmationEvidence:(their words), threadId, clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }. It re-checks the slot, applies the catalog price, writes the database AND Google Calendar atomically, and marks phase 3. Then send compose_and_send template "booking_confirmation" with the bookingId — it goes to the client AND the owner automatically. Done.
+If create_booking returns alternatives (slot taken), offer those exact times and wait for the client to pick.
 
-STAGE 2 — CONFIRM THE DETAILS WITH THE CLIENT:
-Send the client a quote with compose_and_send (template "quote"): the service, the exact catalog price, and 2–3 specific available times from get_availability. Ask them to reply with the time that works to confirm. Then STOP. Do NOT create a booking. Wait for their reply.
+=== CANCEL / RESCHEDULE ===
+Find the booking with get_client_history (by the client's email) to get the bookingId.
+- RESCHEDULE: reschedule_booking(bookingId, newDate, newStartTime). If it returns alternatives, offer them. On success send template "reschedule".
+- CANCEL: cancel_booking(bookingId). Never judge the 24-hour rule yourself:
+  • success -> send template "cancellation".
+  • feeApplies:true -> do NOT cancel; send template "cancellation_fee_notice" and notify_owner. The booking stays in place.
 
-STAGE 3 — VERIFY DETAILS, THEN CREATE THE BOOKING (only once the client confirms):
-When the client's reply explicitly accepts a specific time:
-a) Call get_required_booking_fields and confirm you have EVERY required field (client name, client email, service, date, time, address). If any is missing, send a missing_info email asking for it and STOP — do not book.
-b) When all fields are present, call create_booking with clientConfirmed:true and confirmationEvidence set to the client's own words. This writes the booking to the database AND Google Calendar together, atomically. If the slot was taken meanwhile it returns alternatives — go back to Stage 2.
+=== CONTRACT / VOLUME PRICING ===
+${BUSINESS.pricing.contract.enabled ? `If the message signals recurring/commercial work (${BUSINESS.pricing.contract.triggers.join(", ")}): still quote the standard catalog price, include this exact line — "${BUSINESS.pricing.contract.line}" — and CC the owner via notify_owner. Never invent a contract rate; the owner sets it. Otherwise never mention discounts or rates.` : `Contract pricing is disabled. Never offer discounts or rates — escalate via notify_owner.`}
 
-STAGE 4 — SEND THE CONFIRMED BOOKING EMAIL:
-Send booking_confirmation with compose_and_send using the bookingId from Stage 3. It goes to BOTH the client and the owner — the owner is added automatically, so you do not need to send them a separate email.
+Also CC the owner (handled by notify_owner) on any booking over $${maxPrice}.
 
-STAGE 5 — CALENDAR:
-The Google Calendar event is created as part of Stage 3 (atomic with the booking, so the two can never disagree). If create_booking reported a calendar error, notify the owner with notify_owner.
-
-=== CANCELLATIONS & RESCHEDULES ===
-First find the booking with get_client_history (by the customer's email) to get its bookingId.
-- RESCHEDULE: call reschedule_booking with bookingId + the new date/time. If it returns alternatives (the new slot is taken), offer those and ask the customer to pick. On success, send compose_and_send (template "reschedule", bookingId).
-- CANCEL: call cancel_booking with the bookingId. The system enforces the 24-hour notice policy for you — never decide it yourself:
-  • returns success → the booking is cancelled; send compose_and_send (template "cancellation", bookingId).
-  • returns feeApplies:true → do NOT cancel. Send compose_and_send (template "cancellation_fee_notice", bookingId) to tell the customer a fee applies, and notify the owner with notify_owner. Leave the booking in place.
-
-=== WORK IN A READ → ACT → VERIFY CYCLE ===
-The MANDATORY RULES are always present in your instructions above — they are in front of you every step, so you do NOT need to call read_rules each turn (use it only if you are genuinely unsure of a detail). Operate like this:
-1. GATHER: you may call multiple READ-ONLY tools in a single turn (list_services, get_service, get_availability, get_booking) to collect everything you need at once.
-2. ACT: take exactly ONE state-changing action per turn — create_booking, compose_and_send, send_email, reschedule, cancel. Never fire two changing actions in the same turn.
-3. VERIFY: when the result returns, confirm it complied with the rules (price from catalog, slot from get_availability, required fields present, no off-policy discounts, complaints escalated). If anything violated a rule, fix it before the next action.
-4. Repeat for the next change. After every tool result you'll get a short RULE CHECK reminder — actually do it.
-
-ONE CUSTOMER REPLY PER EMAIL: Each inbound message gets exactly one customer-facing email. A booking request you can fulfil → ONE booking_confirmation (do NOT also send a quote). An inquiry → ONE quote. Missing info → ONE missing_info. After that reply is sent, record it and call mark_email_done — do not send anything else to the customer for this message.
-
-=== DETERMINISM PROTOCOL (NON-NEGOTIABLE — these facts are owned by tools, not by you) ===
-You must NEVER state a price, duration, or time slot from your own judgement. Every such fact comes from a tool result.
-- PRICES & SERVICES: Call list_services (or get_service) and use the returned price EXACTLY. Never write a dollar amount that did not come from a tool result — outbound email is automatically blocked if you do. To choose a service, pick the service_id whose description best matches the request. If nothing fits, do not invent one — escalate to the owner.
-- AVAILABILITY: Call get_availability(date, service_id). You may ONLY offer times it returns. Never propose a time you did not get from this tool. It reads the bookings database (the source of truth), not the calendar.
-- BOOKING: First find_or_create_client to get clientId. Then call create_booking with { clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }. It re-checks the slot, applies the catalog price, and writes both the database and the calendar. If it returns success:false with alternatives, offer those exact alternatives. If a required field is missing, ask for it — do NOT guess. Do NOT call create_booking_record afterwards.
-- RECORD-KEEPING: Call create_inquiry once for every business email (pass threadId, gmailMessageId, clientId, type, summary). After you send a quote, call create_quote with the serviceId (price is taken from the catalog automatically).
-- SENDING: Send every customer-facing email with compose_and_send (template = quote | booking_confirmation | missing_info | reschedule | cancellation). You do NOT write the body — the template fills it from source-of-truth data. For a quote, pass serviceId, slots (labels from get_availability only), and offerContract:true if the request signals recurring/commercial work. For confirmations/reschedule/cancellation, pass the bookingId. Use plain send_email ONLY for internal notes to the owner, never for customer quotes or confirmations.
-- If any tool returns an error or success:false, surface it / ask the customer — never proceed as if it succeeded, and never fabricate a confirmation.
-
-=== CONTRACT / VOLUME PRICING (a defined feature — use it, don't improvise it) ===
-${BUSINESS.pricing.contract.enabled ? `When the customer's message signals recurring or commercial work (any of: ${BUSINESS.pricing.contract.triggers.join(", ")}):
-- Still quote the standard per-visit catalog price from get_service as normal, AND
-- Include this EXACT sentence, word for word: "${BUSINESS.pricing.contract.line}"
-- CC the owner (${BUSINESS.owner.email}) so they can set the contract rate.
-- You must NEVER invent a contract number, percentage, or "better rate" yourself — the owner sets all contract pricing.
-Outside this defined trigger, never mention discounts, contract rates, "better rates", or negotiation of any kind.` : `Contract pricing is disabled. Never offer discounts, contract rates, or negotiation — escalate any such request to the owner.`}
-
-=== RULES ARE THE ONLY AUTHORITY (by design) ===
-Everything you say or do must be backed by a defined rule above/below or a tool result. You do not have discretion to improvise business terms, prices, promises, or policies. If a situation is not covered by a defined rule, do NOT make something up — record the inquiry and forward it to the owner (${BUSINESS.owner.email}).
-
-EMAIL RECIPIENTS: The business has no inbound mailbox. NEVER email a "glowcleaning" or any business/company address, and never invent one. Customer replies go to the customer's own address (the sender). To reach the owner, use the notify_owner tool — do not type the owner's address yourself.
-
-
-REQUIRED FIELDS FOR A BOOKING:
-- Client name (first name minimum)
-- Service type (or enough info to determine it)
-- Preferred date
-- Address OR "same as last time"
-If ANY of these are missing, DO NOT book. Instead, send an email asking for the missing details.
-
-DECISION RULES:
-- NEVER auto-respond to complaints. Forward to ${BUSINESS.owner.email} with a summary.
-- ALWAYS check calendar availability before confirming a booking.
-- ALWAYS include price, duration, and cleaner name in confirmations.
-- ALWAYS CC ${BUSINESS.owner.email} on bookings over $${Math.max(...BUSINESS.services.map((s) => s.price))}.
-- If a time slot is taken, suggest the 3 nearest available slots.
-- Use a ${BUSINESS.calendar.bufferMinutes}-minute buffer between appointments.
-- Working hours: ${BUSINESS.calendar.workingHours.start} to ${BUSINESS.calendar.workingHours.end}.
-- Working days: ${BUSINESS.calendar.workingDays.join(", ")}.
-
-CURRENT OPS LOG:
-${opsContext}
-
-TODAY: ${new Date().toISOString().split("T")[0]}
-TIMEZONE: ${BUSINESS.timezone}
+=== CONTEXT ===
+Today: ${new Date().toISOString().split("T")[0]}   Timezone: ${BUSINESS.timezone}
+Working hours ${BUSINESS.calendar.workingHours.start}–${BUSINESS.calendar.workingHours.end}, days: ${BUSINESS.calendar.workingDays.join(", ")}.
 
 SERVICES:
-${BUSINESS.services.map((s) => `- ${s.name}: $${s.price}, ${s.duration}min — ${s.description}`).join("\n")}
+${BUSINESS.services.map((s) => `- ${s.name} (id ${s.id}): $${s.price}, ${s.duration}min — ${s.description}`).join("\n")}
 
-EMPLOYEES:
-${BUSINESS.employees.map((e) => `- ${e.name} <${e.email}> — specialties: ${e.specialties.join(", ")}`).join("\n")}
+OWNER: ${BUSINESS.owner.name} <${BUSINESS.owner.email}>
 
-OWNER: ${BUSINESS.owner.name} <${BUSINESS.owner.email}>`;
+RECENT ACTIVITY:
+${opsContext}`;
 }
 
 // --- Automation Tools (same as chat tools + ops log tools) ---
@@ -275,6 +214,29 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     description:
       "Return the exact service catalog (id, name, price, duration, description). ALWAYS use this to get prices — never state a price that did not come from here.",
     input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "get_phase",
+    description:
+      "Return the current booking phase for this email thread (the instance). ALWAYS call this first when handling a booking-related email. Phases: 0 = nothing yet, 1 = TALK done, 2 = CONFIRM done, 3 = BOOK done. Do the work for the current phase, then mark it complete.",
+    input_schema: {
+      type: "object" as const,
+      properties: { threadId: { type: "string", description: "Gmail thread ID of the email you are handling" } },
+      required: ["threadId"],
+    },
+  },
+  {
+    name: "mark_phase_complete",
+    description:
+      "Mark a phase complete for this thread once you have finished its work. Phase 1 after you've responded and asked the client to go ahead. Phase 2 after the client has confirmed and details are verified. Phase 3 after the booking is created and confirmed. You cannot skip phases.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        threadId: { type: "string" },
+        phase: { type: "number", description: "The phase you are marking complete: 1, 2, or 3" },
+      },
+      required: ["threadId", "phase"],
+    },
   },
   {
     name: "get_required_booking_fields",
@@ -469,6 +431,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
       properties: {
         clientConfirmed: { type: "boolean", description: "Must be true. Set only when the client has explicitly accepted the specific date/time/service you proposed." },
         confirmationEvidence: { type: "string", description: "The client's own words showing they accepted (e.g. 'yes, book me for Tuesday 8am')." },
+        threadId: { type: "string", description: "Gmail thread ID — required; the booking is gated on this thread reaching phase 2." },
         clientId: { type: "string" },
         serviceId: { type: "string", description: "From list_services" },
         date: { type: "string", description: "YYYY-MM-DD" },
@@ -686,6 +649,43 @@ async function executeTool(
       case "list_services": {
         return JSON.stringify(catalog.listServices(), null, 2);
       }
+      case "get_phase": {
+        const st = await getPhase(input.threadId || "");
+        const guide: Record<number, string> = {
+          0: "PHASE 1 (TALK): respond helpfully, work out the service, and ask the client if they'd like to go ahead with booking. Then mark_phase_complete(1).",
+          1: "PHASE 2 (CONFIRM): if this message is the client confirming, verify the required fields, then mark_phase_complete(2) and proceed to book. If they're still asking questions, keep talking (stay in phase 1).",
+          2: "PHASE 3 (BOOK): create_booking, which sends the confirmation to the client + owner and updates the calendar. Phase 3 is marked automatically on success.",
+          3: "Already booked. Only handle reschedules/cancellations or new questions.",
+        };
+        return JSON.stringify({ phase: st.phase, nextAction: guide[st.phase] || guide[0] });
+      }
+      case "mark_phase_complete": {
+        const threadId = input.threadId || "";
+        const phase = Number(input.phase);
+        const st = await getPhase(threadId);
+        if (phase === 1) {
+          await setPhase(threadId, 1, ctx.messageId || "unknown");
+          return JSON.stringify({ ok: true, phase: 1 });
+        }
+        if (phase === 2) {
+          if (st.phase < 1) {
+            return JSON.stringify({ ok: false, reason: "Cannot mark phase 2 — phase 1 (talk) is not complete yet. Respond and ask the client to go ahead first." });
+          }
+          if (st.phase1Msg && st.phase1Msg === (ctx.messageId || "unknown")) {
+            return JSON.stringify({ ok: false, reason: "Cannot confirm on the same message that started the conversation. Phase 1 was just done now — send your proposal and STOP. The client's confirmation must come in a later reply." });
+          }
+          await setPhase(threadId, 2);
+          return JSON.stringify({ ok: true, phase: 2 });
+        }
+        if (phase === 3) {
+          if (st.phase < 2) {
+            return JSON.stringify({ ok: false, reason: "Cannot mark phase 3 — phase 2 (client confirmation) is not complete yet." });
+          }
+          await setPhase(threadId, 3);
+          return JSON.stringify({ ok: true, phase: 3 });
+        }
+        return JSON.stringify({ ok: false, reason: "phase must be 1, 2, or 3" });
+      }
       case "get_required_booking_fields": {
         return JSON.stringify({
           requiredBeforeBooking: [
@@ -834,6 +834,10 @@ async function executeTool(
         // (the booking gate requires a prior proposal). Reliable — not dependent
         // on the model separately calling create_quote.
         if (t === "quote") {
+          // Sending the quote = TALK phase done for this thread.
+          if (input.threadId) {
+            try { await setPhase(input.threadId, 1, ctx.messageId || "unknown"); } catch {}
+          }
           const svcQ = catalog.getService(input.serviceId);
           if (svcQ) {
             try {
@@ -943,6 +947,17 @@ async function executeTool(
         return JSON.stringify(slots, null, 2);
       }
       case "create_booking": {
+        // Phase gate — the thread must have reached phase 2 (client confirmed).
+        const bThread = input.threadId || "";
+        const ph = await getPhase(bThread);
+        if (ph.phase < 2) {
+          return JSON.stringify({
+            success: false,
+            blocked: true,
+            phase: ph.phase,
+            reason: `Booking blocked: this thread is at phase ${ph.phase}, not phase 2. You may only book after the client has confirmed and you have marked phase 2 complete. If this is a first contact, do phase 1 (respond + ask them to go ahead), mark_phase_complete(1), and STOP.`,
+          });
+        }
         // Field completeness — all required booking fields must be present.
         const requiredFields: Record<string, any> = {
           clientName: input.clientName,
@@ -967,20 +982,7 @@ async function executeTool(
           return JSON.stringify({
             success: false,
             blocked: true,
-            reason: "Not yet confirmed by the client. Do NOT book yet. Complete STAGE 2 first: send the client the proposed details (service, price, specific time) and wait for them to explicitly confirm. Only call create_booking once they have accepted, passing clientConfirmed:true and their words as confirmationEvidence.",
-          });
-        }
-        // Hard rail: a booking requires a proposal already sent to this client in a
-        // PRIOR inbound message (i.e. this message is their confirmation reply).
-        // This makes booking-on-first-contact impossible regardless of what the model claims.
-        const priorProposal = (input.clientId || input.clientEmail)
-          ? await clientsDb.hasPriorProposal({ clientId: input.clientId, email: input.clientEmail }, ctx.messageId)
-          : false;
-        if (!priorProposal) {
-          return JSON.stringify({
-            success: false,
-            blocked: true,
-            reason: "No prior proposal on record for this client. You cannot book on first contact. STAGE 2 first: send a quote with the price and specific available times and ask the client to confirm. Book only after they reply confirming a time.",
+            reason: "Pass clientConfirmed:true and the client's own confirming words as confirmationEvidence.",
           });
         }
         const r = await bookingService.createBookingGuarded(accessToken, {
@@ -1004,7 +1006,8 @@ async function executeTool(
           details: `Booking ${r.bookingId}: ${r.service.name} on ${input.date} ${r.start}-${r.end} for $${r.service.price}`,
           verified: true,
         });
-        return JSON.stringify({ success: true, bookingId: r.bookingId, calendarEventId: r.calendarEventId, service: r.service, date: input.date, start: r.start, end: r.end });
+        await setPhase(bThread, 3);
+        return JSON.stringify({ success: true, bookingId: r.bookingId, calendarEventId: r.calendarEventId, service: r.service, date: input.date, start: r.start, end: r.end, phase: 3, note: "Phase 3 marked complete. Now send the booking confirmation with compose_and_send (template booking_confirmation)." });
       }
       case "reschedule_booking": {
         const r = await bookingService.rescheduleGuarded(accessToken, input.bookingId, input.newDate, input.newStartTime);
@@ -1364,8 +1367,9 @@ IMPORTANT: When replying to this email, use threadId="${e.threadId}" and replyTo
       .join("\n\n---\n\n");
 
     const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
-1. Classify it, then execute the correct workflow (see the staged BOOKING WORKFLOW for booking requests)
-3. If already processed: skip it
+1. Classify it (booking, inquiry, reschedule, cancellation, or complaint).
+2. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
+3. Send exactly one customer reply, then mark_email_done.
 
 EMAILS TO PROCESS:
 
@@ -1444,8 +1448,9 @@ IMPORTANT: When replying, use threadId="${e.threadId}" and replyToMessageId="${e
     .join("\n\n---\n\n");
 
   const userMessage = `Process these ${unprocessed.length} new email(s). For EACH email:
-1. Classify it, then execute the correct workflow (see the staged BOOKING WORKFLOW for booking requests)
-3. If already processed: skip it
+1. Classify it (booking, inquiry, reschedule, cancellation, or complaint).
+2. For anything booking-related, call get_phase first using the "Thread" value as threadId, then do only that phase's work (see BOOKING = 3 PHASES). Pass threadId on get_phase, mark_phase_complete, create_booking, and every send.
+3. Send exactly one customer reply, then mark_email_done.
 
 EMAILS TO PROCESS:
 
