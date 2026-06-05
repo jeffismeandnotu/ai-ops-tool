@@ -96,7 +96,7 @@ export default function Home() {
     <div className="h-full flex flex-col" style={{ background: "var(--bg-surface)" }}>
 
       {/* Header */}
-      <header className="safe-top flex items-center justify-between px-4 py-3 z-50" style={{ background: "var(--bg-card)", borderBottom: "1px solid var(--border)", boxShadow: "var(--shadow-sm)" }}>
+      <header className="safe-top flex items-center justify-between px-4 py-4 z-50" style={{ background: "var(--bg-card)", borderBottom: "1px solid var(--border)", boxShadow: "var(--shadow-sm)" }}>
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "var(--accent-light)" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
