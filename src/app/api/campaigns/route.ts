@@ -1,139 +1,198 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { verifyCronSecret } from "@/lib/webhook-verify";
-import { runCampaign, type CampaignMode } from "@/lib/campaigns/engine";
-import { listCampaigns } from "@/lib/campaigns/config";
 import { listTemplates } from "@/lib/campaigns/templates";
+import { render } from "@/lib/campaigns/templates";
 import {
   listRecipients,
   addRecipient,
   removeRecipient,
+  seedDemoRecipients,
+  getRecipientById,
 } from "@/lib/campaigns/audience";
+import {
+  listScheduledCampaigns,
+  scheduleCampaign,
+  cancelCampaign,
+  runScheduled,
+  runDue,
+  type CampaignMode,
+} from "@/lib/campaigns/engine";
 
-function authCheck(req: NextRequest): boolean {
-  const secret =
-    req.headers.get("x-cron-secret") ||
-    req.nextUrl.searchParams.get("secret");
-  return verifyCronSecret(secret);
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+async function authorized(req: NextRequest): Promise<boolean> {
+  const fromHeader = req.headers.get("x-cron-secret");
+  const fromQuery = req.nextUrl.searchParams.get("secret");
+  if (verifyCronSecret(fromHeader) || verifyCronSecret(fromQuery)) return true;
+  const session = await getServerSession(authOptions);
+  return !!session;
+}
+
+function cronOnly(req: NextRequest): boolean {
+  const fromHeader = req.headers.get("x-cron-secret");
+  const fromQuery = req.nextUrl.searchParams.get("secret");
+  return verifyCronSecret(fromHeader) || verifyCronSecret(fromQuery);
+}
+
+function json(data: unknown, status = 200) {
+  return NextResponse.json(data, { status });
 }
 
 export async function GET(req: NextRequest) {
-  if (!authCheck(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!(await authorized(req))) {
+    return json({ error: "Unauthorized" }, 401);
   }
 
-  const action = req.nextUrl.searchParams.get("action") || "list";
+  const action = req.nextUrl.searchParams.get("action") || "templates";
 
-  if (action === "list") {
-    return NextResponse.json({
-      campaigns: listCampaigns(),
-      templates: listTemplates(),
-    });
+  if (action === "templates") {
+    return json({ templates: listTemplates() });
   }
 
   if (action === "recipients") {
+    await seedDemoRecipients();
     const recipients = await listRecipients();
-    return NextResponse.json({ recipients });
+    return json({ recipients });
+  }
+
+  if (action === "scheduled") {
+    const campaigns = await listScheduledCampaigns();
+    return json({ campaigns });
   }
 
   if (action === "preview") {
-    const campaignId = req.nextUrl.searchParams.get("campaign");
-    if (!campaignId) {
-      return NextResponse.json(
-        { error: "campaign query param required" },
-        { status: 400 }
-      );
+    const templateId = req.nextUrl.searchParams.get("template");
+    const recipientId = req.nextUrl.searchParams.get("recipient");
+    if (!templateId) {
+      return json({ error: "template query param required" }, 400);
     }
-    try {
-      const result = await runCampaign(campaignId, "preview");
-      return NextResponse.json(result);
-    } catch (e: any) {
-      return NextResponse.json(
-        { error: e.message || String(e) },
-        { status: 400 }
-      );
+
+    let vars: Record<string, string> = {
+      first_name: "Demo",
+      email: "demo@example.com",
+      date: new Date().toISOString().slice(0, 10),
+    };
+
+    if (recipientId) {
+      const r = await getRecipientById(recipientId);
+      if (r) {
+        vars = {
+          first_name: r.firstName,
+          email: r.email,
+          date: new Date().toISOString().slice(0, 10),
+          ...r.vars,
+        };
+      }
     }
+
+    const rendered = render(templateId, vars);
+    if (!rendered) {
+      return json({ error: `Unknown template: ${templateId}` }, 400);
+    }
+
+    return json({ preview: rendered });
   }
 
-  return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+  return json({ error: `Unknown action: ${action}` }, 400);
 }
 
 export async function POST(req: NextRequest) {
-  if (!authCheck(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!(await authorized(req))) {
+    return json({ error: "Unauthorized" }, 401);
   }
 
   const action = req.nextUrl.searchParams.get("action") || "";
 
-  if (action === "add_recipient") {
+  if (action === "add-recipient") {
     try {
       const body = await req.json();
       const { email, firstName, vars } = body;
-      if (!email) {
-        return NextResponse.json(
-          { error: "email is required" },
-          { status: 400 }
-        );
-      }
-      const recipient = await addRecipient(
-        email,
-        firstName || "",
-        vars || {}
-      );
-      return NextResponse.json({ ok: true, recipient });
+      if (!email) return json({ error: "email is required" }, 400);
+      const recipient = await addRecipient(email, firstName || "", vars || {});
+      return json({ ok: true, recipient });
     } catch (e: any) {
-      return NextResponse.json(
-        { error: e.message || String(e) },
-        { status: 400 }
-      );
+      return json({ error: e.message || String(e) }, 400);
     }
   }
 
-  if (action === "remove_recipient") {
+  if (action === "remove-recipient") {
     try {
       const body = await req.json();
       const { email } = body;
-      if (!email) {
-        return NextResponse.json(
-          { error: "email is required" },
-          { status: 400 }
+      if (!email) return json({ error: "email is required" }, 400);
+      const removed = await removeRecipient(email);
+      return json({ ok: true, removed });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 400);
+    }
+  }
+
+  if (action === "schedule") {
+    try {
+      const body = await req.json();
+      const { name, templateId, audience, recipientIds, sendAt, mode } = body;
+      if (!name || !templateId || !sendAt) {
+        return json(
+          { error: "name, templateId, and sendAt are required" },
+          400
         );
       }
-      const removed = await removeRecipient(email);
-      return NextResponse.json({ ok: true, removed });
+      const campaign = await scheduleCampaign({
+        name,
+        templateId,
+        audience: audience || "all",
+        recipientIds,
+        sendAt,
+        mode,
+      });
+      return json({ ok: true, campaign });
     } catch (e: any) {
-      return NextResponse.json(
-        { error: e.message || String(e) },
-        { status: 400 }
-      );
+      return json({ error: e.message || String(e) }, 400);
+    }
+  }
+
+  if (action === "cancel") {
+    try {
+      const body = await req.json();
+      const { id } = body;
+      if (!id) return json({ error: "id is required" }, 400);
+      const cancelled = await cancelCampaign(id);
+      return json({ ok: true, cancelled });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 400);
     }
   }
 
   if (action === "run") {
-    const campaignId = req.nextUrl.searchParams.get("campaign");
-    if (!campaignId) {
-      return NextResponse.json(
-        { error: "campaign query param required" },
-        { status: 400 }
-      );
-    }
+    const id = req.nextUrl.searchParams.get("id");
+    if (!id) return json({ error: "id query param required" }, 400);
     const mode =
       (req.nextUrl.searchParams.get("mode") as CampaignMode) || "test";
     if (!["preview", "test", "live"].includes(mode)) {
-      return NextResponse.json(
-        { error: "mode must be preview, test, or live" },
-        { status: 400 }
-      );
+      return json({ error: "mode must be preview, test, or live" }, 400);
     }
     try {
-      const result = await runCampaign(campaignId, mode);
-      return NextResponse.json(result);
+      const result = await runScheduled(id, mode);
+      return json(result);
     } catch (e: any) {
-      return NextResponse.json(
-        { error: e.message || String(e) },
-        { status: 400 }
-      );
+      return json({ error: e.message || String(e) }, 400);
     }
   }
 
-  return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+  if (action === "run-due") {
+    if (!cronOnly(req)) {
+      return json({ error: "run-due requires CRON_SECRET" }, 403);
+    }
+    try {
+      const results = await runDue();
+      return json({ ok: true, results });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 500);
+    }
+  }
+
+  return json({ error: `Unknown action: ${action}` }, 400);
 }
