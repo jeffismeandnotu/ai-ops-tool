@@ -151,11 +151,21 @@ export async function getUpcomingAvailability(
   const todayStr = `${nowParts.year}-${nowParts.month}-${nowParts.day}`;
   const nowMin = +nowParts.hour * 60 + +nowParts.minute;
 
+  // 6-month booking horizon — never offer dates beyond it
+  const [ty, tm, td] = todayStr.split("-").map(Number);
+  let hm = tm + 6;
+  let hy = ty;
+  if (hm > 12) { hy++; hm -= 12; }
+  const lastDay = new Date(hy, hm, 0).getDate();
+  const hd = Math.min(td, lastDay);
+  const horizonStr = `${hy}-${String(hm).padStart(2, "0")}-${String(hd).padStart(2, "0")}`;
+
   const result: { date: string; weekday: string; slots: string[] }[] = [];
   const cursor = new Date(`${todayStr}T12:00:00Z`);
 
   for (let scanned = 0; scanned < 30 && result.length < days; scanned++) {
     const dateStr = cursor.toISOString().slice(0, 10);
+    if (dateStr > horizonStr) break;
     const wd = WEEKDAYS[cursor.getUTCDay()];
 
     if (BUSINESS.calendar.workingDays.includes(wd)) {

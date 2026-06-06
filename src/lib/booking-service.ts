@@ -24,6 +24,30 @@ function zonedWallClockToUtcMs(dateStr: string, timeStr: string, tz: string): nu
 }
 
 // ============================================================
+// 6-MONTH BOOKING HORIZON — hard lock
+// ============================================================
+export function isWithinBookingHorizon(dateStr: string): boolean {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: BUSINESS.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const todayStr = fmt.format(new Date());
+  const [ty, tm, td] = todayStr.split("-").map(Number);
+  let hm = tm + 6;
+  let hy = ty;
+  if (hm > 12) {
+    hy++;
+    hm -= 12;
+  }
+  const lastDay = new Date(hy, hm, 0).getDate();
+  const hd = Math.min(td, lastDay);
+  const horizonStr = `${hy}-${String(hm).padStart(2, "0")}-${String(hd).padStart(2, "0")}`;
+  return dateStr.slice(0, 10) <= horizonStr;
+}
+
+// ============================================================
 // BOOKING SERVICE — the only path that writes a booking
 // ============================================================
 // Guarantees, enforced in code (not by the model):
@@ -84,7 +108,12 @@ export async function createBookingGuarded(
   if (!input.address) missing.push("address");
   if (missing.length) return { ok: false, reason: `Missing required fields: ${missing.join(", ")}` };
 
-  // 3. Re-check the slot is actually free right now.
+  // 3. Booking horizon — no date more than 6 months out.
+  if (!isWithinBookingHorizon(input.date)) {
+    return { ok: false, reason: "too_far_ahead" };
+  }
+
+  // 4. Re-check the slot is actually free right now.
   const free = await isSlotFree(input.date, input.serviceId, input.startTime);
   if (!free.free) {
     const avail = await getAvailability(input.date, input.serviceId);
