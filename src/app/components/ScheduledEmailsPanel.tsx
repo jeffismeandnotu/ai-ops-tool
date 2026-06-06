@@ -192,7 +192,7 @@ export default function ScheduledEmailsPanel() {
     setRunBusy(false);
   };
 
-  const liveLocked = true;
+  const liveLocked = false;
 
   const cardStyle = {
     background: "var(--bg-card)",
@@ -246,7 +246,7 @@ export default function ScheduledEmailsPanel() {
           <line x1="12" y1="16" x2="12.01" y2="16" />
         </svg>
         <p className="text-[11px] font-medium" style={{ color: "var(--accent)" }}>
-          Demo mode — sends go to test address only. Live sending is disabled.
+          Test mode sends to your test address. Live mode sends to real recipients.
         </p>
       </div>
 
@@ -569,7 +569,7 @@ export default function ScheduledEmailsPanel() {
                     className="flex-1 py-2 rounded-xl text-[12px] font-medium transition-all active:scale-[0.97] disabled:opacity-40"
                     style={pillBtn(formMode === m)}
                   >
-                    {m === "live" ? "Live (disabled)" : modeLabel(m)}
+                    {modeLabel(m)}
                   </button>
                 ))}
               </div>
