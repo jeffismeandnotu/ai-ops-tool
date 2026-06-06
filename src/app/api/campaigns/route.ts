@@ -97,6 +97,18 @@ export async function GET(req: NextRequest) {
     return json({ preview: rendered });
   }
 
+  if (action === "run-due") {
+    if (!cronOnly(req)) {
+      return json({ error: "run-due requires CRON_SECRET" }, 403);
+    }
+    try {
+      const results = await runDue();
+      return json({ ok: true, results });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 500);
+    }
+  }
+
   return json({ error: `Unknown action: ${action}` }, 400);
 }
 
