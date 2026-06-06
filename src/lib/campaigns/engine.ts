@@ -268,7 +268,7 @@ export async function runScheduled(
   return { scheduledCampaignId: id, mode, date, rendered, results };
 }
 
-export async function runDue(modeOverride?: CampaignMode): Promise<CampaignRunResult[]> {
+export async function runDue(): Promise<CampaignRunResult[]> {
   await ensureScheduledTable();
   const sql = getDb();
   const dueRows =
@@ -278,8 +278,7 @@ export async function runDue(modeOverride?: CampaignMode): Promise<CampaignRunRe
   for (const row of dueRows) {
     const sc = toScheduledCampaign(row);
     try {
-      const mode = modeOverride || (sc.mode as CampaignMode);
-      const result = await runScheduled(sc.id, mode);
+      const result = await runScheduled(sc.id, sc.mode as CampaignMode);
       results.push(result);
       await sql`UPDATE scheduled_campaigns SET status = 'sent' WHERE id = ${Number(sc.id)}`;
     } catch (e: any) {

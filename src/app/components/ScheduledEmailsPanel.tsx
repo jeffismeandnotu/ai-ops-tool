@@ -162,24 +162,6 @@ export default function ScheduledEmailsPanel() {
     setPreview(d.preview || null);
   };
 
-  const handleRunDue = async () => {
-    setRunBusy(true);
-    setRunResult("Running...");
-    try {
-      const d = await postJson("/api/campaigns?action=run-due", {});
-      if (d.error) {
-        setRunResult(`Error: ${d.error}`);
-      } else {
-        const count = d.results?.length || 0;
-        setRunResult(count > 0 ? `Ran ${count} due campaign(s)` : "No campaigns due");
-      }
-      reload();
-    } catch (e: any) {
-      setRunResult(`Error: ${e.message}`);
-    }
-    setRunBusy(false);
-  };
-
   const handleRunNow = async (id: string, mode: string) => {
     setRunBusy(true);
     setRunResult("Running...");
@@ -282,19 +264,9 @@ export default function ScheduledEmailsPanel() {
       {/* Scheduled Campaigns */}
       {section === "campaigns" && (
         <div className="rounded-2xl p-4" style={cardStyle}>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>
-              Scheduled Emails
-            </h3>
-            <button
-              onClick={handleRunDue}
-              disabled={runBusy}
-              className="text-[11px] font-medium py-1 px-3 rounded-full transition-all active:scale-[0.95] disabled:opacity-50"
-              style={{ color: "var(--accent)", background: "var(--accent-light)" }}
-            >
-              {runBusy ? "Running..." : "Run due now (test)"}
-            </button>
-          </div>
+          <h3 className="text-[14px] font-semibold mb-3" style={{ color: "var(--text-primary)" }}>
+            Scheduled Emails
+          </h3>
 
           {campaigns.length === 0 ? (
             <p className="text-[12px] py-4 text-center" style={{ color: "var(--text-muted)" }}>

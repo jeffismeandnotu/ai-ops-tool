@@ -15,8 +15,6 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"chat" | "auto" | "ops">("chat");
   const [opsLog, setOpsLog] = useState("");
-  const [autoResult, setAutoResult] = useState("");
-  const [autoRunning, setAutoRunning] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
@@ -46,13 +44,6 @@ export default function Home() {
   const checkToken = async () => { try { const r = await fetch("/api/auth/token"); const d = await r.json(); setTokenSaved(d.hasToken); } catch {} };
   const saveToken = async () => { await fetch("/api/auth/token", { method: "POST" }); setTokenSaved(true); };
   const loadOps = async () => { const r = await fetch("/api/ops?view=summary"); const d = await r.json(); setOpsLog(d.summary || "No operations yet."); };
-
-  const triggerAutomation = async () => {
-    setAutoRunning(true); setAutoResult("Processing...");
-    try { const r = await fetch("/api/cron/process", { method: "POST" }); const d = await r.json(); setAutoResult(JSON.stringify(d, null, 2)); }
-    catch (e: any) { setAutoResult(`Error: ${e.message}`); }
-    setAutoRunning(false);
-  };
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
@@ -219,7 +210,7 @@ export default function Home() {
         <div className="flex-1 overflow-y-auto chat-scroll hide-scrollbar px-4 py-4">
           <div className="rounded-2xl p-5 mb-3" style={{ background: "var(--bg-card)", border: "1px solid var(--border)", boxShadow: "var(--shadow-sm)" }}>
             <h2 className="text-[15px] font-semibold mb-4" style={{ color: "var(--text-primary)" }}>Automation</h2>
-            <div className="mb-5">
+            <div>
               <p className="text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Access Token</p>
               <p className="text-[11px] mb-3" style={{ color: "var(--text-muted)" }}>Required for automated email processing</p>
               <button onClick={saveToken} className="w-full py-2.5 rounded-full text-[13px] font-medium transition-all active:scale-[0.98]"
@@ -227,22 +218,7 @@ export default function Home() {
                 {tokenSaved ? "Token saved" : "Save Token"}
               </button>
             </div>
-            <div>
-              <p className="text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Process Emails</p>
-              <p className="text-[11px] mb-3" style={{ color: "var(--text-muted)" }}>Read new emails, classify, and take action</p>
-              <button onClick={triggerAutomation} disabled={autoRunning}
-                className="w-full py-2.5 rounded-full text-[13px] font-medium transition-all active:scale-[0.98] disabled:opacity-50"
-                style={{ background: "var(--accent)", color: "#fff" }}>
-                {autoRunning ? "Processing..." : "Run Now"}
-              </button>
-            </div>
           </div>
-          {autoResult && (
-            <div className="rounded-2xl p-4" style={{ background: "var(--bg-card)", border: "1px solid var(--border)", boxShadow: "var(--shadow-sm)" }}>
-              <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>Result</p>
-              <pre className="text-[11px] leading-relaxed overflow-x-auto whitespace-pre-wrap" style={{ color: "var(--text-primary)" }}>{autoResult}</pre>
-            </div>
-          )}
 
           {/* Scheduled Emails */}
           <ScheduledEmailsPanel />

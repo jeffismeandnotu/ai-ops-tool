@@ -183,15 +183,11 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === "run-due") {
-    const isCron = cronOnly(req);
-    if (!isCron) {
-      const session = await getServerSession(authOptions);
-      if (!session) {
-        return json({ error: "Unauthorized" }, 401);
-      }
+    if (!cronOnly(req)) {
+      return json({ error: "run-due requires CRON_SECRET" }, 403);
     }
     try {
-      const results = await runDue(isCron ? undefined : "test");
+      const results = await runDue();
       return json({ ok: true, results });
     } catch (e: any) {
       return json({ error: e.message || String(e) }, 500);
