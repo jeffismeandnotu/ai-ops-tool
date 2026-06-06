@@ -26,7 +26,7 @@ async function recordEvent(sender: string, eventType = "inbound"): Promise<void>
   await sql`INSERT INTO rate_events (sender, event_type) VALUES (${sender.toLowerCase()}, ${eventType})`;
 }
 
-const DEFAULT_SENDER_CAP = 5;
+const DEFAULT_SENDER_CAP = 10;
 const DEFAULT_GLOBAL_CAP = 100;
 const DEFAULT_DAILY_SPEND = 25;
 
@@ -34,10 +34,10 @@ export async function checkSenderCap(
   sender: string
 ): Promise<{ allowed: boolean; count: number; cap: number }> {
   await ensureTable();
-  const cap = parseInt(process.env.MAX_REPLIES_PER_SENDER_HOUR || "", 10) || DEFAULT_SENDER_CAP;
+  const cap = parseInt(process.env.MAX_REPLIES_PER_SENDER_DAY || "", 10) || DEFAULT_SENDER_CAP;
   const sql = getDb();
   const rows = await sql`SELECT COUNT(*)::int AS cnt FROM rate_events
-    WHERE sender = ${sender.toLowerCase()} AND ts > NOW() - INTERVAL '1 hour'`;
+    WHERE sender = ${sender.toLowerCase()} AND ts > NOW() - INTERVAL '1 day'`;
   const count = rows[0]?.cnt || 0;
   if (count < cap) {
     await recordEvent(sender);
@@ -92,8 +92,8 @@ export async function runAllGuards(sender: string): Promise<GuardResult> {
 
   const perSender = await checkSenderCap(sender);
   if (!perSender.allowed) {
-    logSecurityEvent({ type: "rate_limit_hit", severity: "warn", sender, details: `${perSender.count}/${perSender.cap}/hr` });
-    return { allowed: false, reason: `Sender rate limit (${perSender.count}/${perSender.cap} per hour for ${sender})`, senderCount: perSender.count };
+    logSecurityEvent({ type: "rate_limit_hit", severity: "warn", sender, details: `${perSender.count}/${perSender.cap}/day` });
+    return { allowed: false, reason: `Sender rate limit (${perSender.count}/${perSender.cap} per day for ${sender})`, senderCount: perSender.count };
   }
 
   return { allowed: true, senderCount: perSender.count, globalCount: global.count, dailySpent: daily.spent };
