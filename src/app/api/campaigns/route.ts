@@ -15,6 +15,7 @@ import {
   listScheduledCampaigns,
   scheduleCampaign,
   cancelCampaign,
+  clearHistory,
   runScheduled,
   runDue,
   type CampaignMode,
@@ -161,6 +162,15 @@ export async function POST(req: NextRequest) {
       if (!id) return json({ error: "id is required" }, 400);
       const cancelled = await cancelCampaign(id);
       return json({ ok: true, cancelled });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 400);
+    }
+  }
+
+  if (action === "clear-history") {
+    try {
+      const count = await clearHistory();
+      return json({ ok: true, deleted: count });
     } catch (e: any) {
       return json({ error: e.message || String(e) }, 400);
     }

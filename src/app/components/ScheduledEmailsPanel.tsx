@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface Template {
   id: string;
@@ -70,6 +70,7 @@ export default function ScheduledEmailsPanel() {
   const [runBusy, setRunBusy] = useState(false);
 
   const [section, setSection] = useState<"campaigns" | "recipients" | "create">("campaigns");
+  const dateInputRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -150,6 +151,12 @@ export default function ScheduledEmailsPanel() {
 
   const handleCancel = async (id: string) => {
     await postJson("/api/campaigns?action=cancel", { id });
+    reload();
+  };
+
+  const handleClearHistory = async () => {
+    await postJson("/api/campaigns?action=clear-history", {});
+    setRunResult("");
     reload();
   };
 
@@ -357,6 +364,16 @@ export default function ScheduledEmailsPanel() {
               {runResult}
             </p>
           )}
+
+          {campaigns.some((c) => c.status !== "scheduled") && (
+            <button
+              onClick={handleClearHistory}
+              className="text-[11px] font-medium mt-3 py-1.5 px-3 rounded-full transition-all active:scale-[0.95]"
+              style={{ color: "var(--text-muted)", background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+            >
+              Clear history
+            </button>
+          )}
         </div>
       )}
 
@@ -528,10 +545,12 @@ export default function ScheduledEmailsPanel() {
                 Send at
               </label>
               <input
+                ref={dateInputRef}
                 type="datetime-local"
                 value={formDateTime}
                 onChange={(e) => setFormDateTime(e.target.value)}
-                className="w-full py-2 px-3 rounded-xl text-[13px]"
+                onClick={() => { try { dateInputRef.current?.showPicker(); } catch {} }}
+                className="w-full py-2 px-3 rounded-xl text-[13px] cursor-pointer"
                 style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
               />
             </div>

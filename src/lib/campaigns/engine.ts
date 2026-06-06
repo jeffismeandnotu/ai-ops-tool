@@ -145,6 +145,13 @@ export async function cancelCampaign(id: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+export async function clearHistory(): Promise<number> {
+  await ensureScheduledTable();
+  const sql = getDb();
+  const rows = await sql`DELETE FROM scheduled_campaigns WHERE status IN ('sent', 'cancelled', 'error') RETURNING id`;
+  return rows.length;
+}
+
 export async function listScheduledCampaigns(): Promise<ScheduledCampaign[]> {
   await ensureScheduledTable();
   const sql = getDb();
