@@ -21,7 +21,6 @@ export const authOptions: NextAuthOptions = {
           ].join(" "),
           access_type: "offline",
           prompt: "consent",
-          ...(process.env.NEXTAUTH_URL ? { redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/callback/google` } : {}),
         },
       },
     }),
