@@ -156,9 +156,12 @@ Phase 1 — QUOTE
     Auto-marked when quote template is sent.
     |
     v
-Phase 2 — VALIDATE & CONFIRM
-    Customer replies with a time → check_slot validates it.
-    Customer asks for availability → get_upcoming_availability.
+Phase 2 — COLLECT BOOKING DETAILS
+    Customer confirms service → send ONE consolidated checklist
+    (missing_info template) with all 5 booking fields:
+    name, service, address+code, date, time.
+    Known fields pre-filled; unknowns blank. Never drips fields.
+    Customer names a date+time → check_slot validates it.
     All fields present + slot free → mark phase 2.
     |
     v
@@ -168,6 +171,16 @@ Phase 3 — BOOK
 ```
 
 Phase 1 records which message triggered it (`phase1_msg`). Phase 2 can only be marked on a *later* message — prevents booking on first contact.
+
+### Booking Horizon (6-month hard lock)
+No booking may be created or offered for a date more than 6 calendar months from today, computed in `BUSINESS.timezone`. Enforced in code:
+- `isWithinBookingHorizon(dateStr)` in `booking-service.ts` — deterministic guard
+- `createBookingGuarded()` — returns `{ ok:false, reason:"too_far_ahead" }` without writing to DB or Calendar
+- `getUpcomingAvailability()` — breaks scan at the horizon, never offers dates past it
+- `tooFarAheadEmail` template — warm-professional refusal, asks the customer to reach back out
+
+### Date Format Rule
+All customer-facing dates use full-year format: `Month D, YYYY` (e.g. "June 11, 2026"). `prettyDate()` and `prettySlot()` include the year. Standing prompt rule prohibits bare ISO dates and ambiguous numeric formats.
 
 ---
 
@@ -207,6 +220,13 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 | `rate_limits` | Token-bucket state | key (PK), tokens, last_refill |
 | `security_events` | Security event audit log | id, ts, event_type, severity, source, ip, sender |
 
+### Campaign Tables (isolated — no FK to core tables)
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `campaign_recipients` | Audience list (demo data by default) | id, email (unique), first_name, vars (JSONB), active |
+| `campaign_sends` | Exactly-once send ledger | id, campaign_id, recipient_email, send_date, status, provider, sent_at; UNIQUE(campaign_id, recipient_email, send_date) |
+
 ---
 
 ## API Endpoints
@@ -227,6 +247,8 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 | `/api/cron/process` | POST | Session | Manual trigger from dashboard |
 | `/api/cron/reminders` | GET | CRON_SECRET | Send booking reminders |
 | `/api/automation` | GET/POST | Session or CRON_SECRET | Read/toggle automation on/off |
+| `/api/campaigns` | GET | CRON_SECRET | List campaigns/templates, preview rendered emails, list recipients |
+| `/api/campaigns` | POST | CRON_SECRET | Run campaign (test/live mode), add/remove recipients |
 | `/api/chat` | POST | Session | Dashboard chat interface |
 | `/api/ops` | GET | Session or CRON_SECRET | Operations dashboard data |
 
@@ -254,17 +276,54 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 | `availability.ts` | Slot computation from bookings DB: `getAvailability`, `isSlotFree`, `getUpcomingAvailability` |
 | `clients-db.ts` | Client CRUD, booking CRUD, inquiries, quotes, email log, `getClientProfile()` (consolidated golden record), `mergeUpsertClient()` (merge-only upsert with address history, gate code scrubbing), duplicate detection |
 | `catalog.ts` | Service catalog lookup (`getService`, `listServices`, `requireService`) |
-| `templates.ts` | 11 email templates with variation engine (`pick()` for warm-professional tone), `validateOutboundFacts` |
+| `templates.ts` | 12 email templates with variation engine (`pick()` for warm-professional tone), `validateOutboundFacts` |
 | `triage.ts` | `scanRisk()` keyword detector (HUMAN, MONEY_LEGAL, ANGER), classification persistence |
 | `ops-log.ts` | Operations log, processed emails, usage/cost tracking |
 | `app-settings.ts` | Global automation on/off switch (key-value in Neon) |
 | `waitlist.ts` | Waitlist management for full dates |
 | `llm.ts` | OpenAI-compatible LLM client (Gemini/DeepSeek fallback) |
 | `ai.ts` | Dashboard chat function |
-| `rate-guard.ts` | Per-sender cap, global circuit breaker, daily spend guard |
+| `rate-guard.ts` | Per-sender cap (10/day), global circuit breaker, daily spend guard |
 | `rate-limit.ts` | Token-bucket rate limiter, payload size/shape validation |
 | `webhook-verify.ts` | Gmail OIDC verification, Twilio signature verification, timing-safe secret comparison |
 | `security-log.ts` | Security events table and logging |
+| `campaigns/sender.ts` | Email sender adapter: `GmailSender` (self-contained OAuth), `ResendSender` (full impl, inert w/o key), `getSender()` factory |
+| `campaigns/templates.ts` | Campaign template registry with `{{token}}` merge (3 starters: daily_reminder, service_due, followup) |
+| `campaigns/audience.ts` | Recipient CRUD (`campaign_recipients` table), demo seeding, audience provider seam |
+| `campaigns/config.ts` | Campaign definitions (id, templateId, schedule, audience) |
+| `campaigns/engine.ts` | Campaign runner: preview/test/live modes, send ledger (`campaign_sends`), exactly-once dedup |
+
+---
+
+## Campaign Engine (`src/lib/campaigns/`)
+
+Standalone, isolated recurring-email system. Does NOT import from automation.ts, booking-service.ts, the agent loop, or the Gmail webhook. All new code, new tables, new route.
+
+### Isolation
+- Self-contained Gmail sender reads OAuth creds from env/DB directly
+- No FK to existing tables — `campaign_recipients` is independent
+- Separate route (`/api/campaigns`) not added to vercel.json crons
+- Resend adapter built but inert unless `RESEND_API_KEY` is set
+
+### Modes
+| Mode | Behavior |
+|------|----------|
+| `preview` (default) | Renders merged emails, returns them. Sends nothing, writes nothing. |
+| `test` | Sends all rendered emails to `CAMPAIGN_TEST_ADDRESS` only. Ignores real recipient list. |
+| `live` | Sends to real recipients. Gated by `CAMPAIGNS_ENABLED=true`. Idempotent via send ledger (unique on campaign+email+date). |
+
+### Route (`/api/campaigns`)
+| Method | Action | Purpose |
+|--------|--------|---------|
+| GET | `?action=list` | List campaigns and templates |
+| GET | `?action=preview&campaign=<id>` | Render merged demo emails (sends nothing) |
+| GET | `?action=recipients` | List all recipients |
+| POST | `?action=add_recipient` | Add/reactivate a recipient |
+| POST | `?action=remove_recipient` | Deactivate a recipient |
+| POST | `?action=run&campaign=<id>&mode=test\|live` | Execute a campaign run |
+
+### Template Merge
+Mechanical `{{token}}` replacement — no LLM. Unknown tokens replaced with empty string. Tokens: `first_name`, `date`, `time`, `service`, `address`, plus any key in the recipient's `vars` JSONB.
 
 ---
 
@@ -292,7 +351,7 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 - Tracked via `ctx.destructiveActionDone`
 
 ### Rate & Spend Guards
-- **Per-sender**: 5 replies/hour (configurable via `MAX_REPLIES_PER_SENDER_HOUR`)
+- **Per-sender**: 10 replies/day (configurable via `MAX_REPLIES_PER_SENDER_DAY`)
 - **Global circuit breaker**: 100 inbound events/hour (`MAX_INBOUND_PER_HOUR`)
 - **Daily spend cap**: $25/day API cost (`MAX_DAILY_SPEND_USD`)
 - Owner notified by email on critical guard trips
@@ -340,9 +399,13 @@ HSTS, CSP, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-P
 | `GMAIL_PUBSUB_TOPIC` | `projects/ai-ops-tool/topics/gmail-push` | Google Pub/Sub topic |
 | `GMAIL_PUBSUB_AUDIENCE` | — | Webhook URL for Pub/Sub OIDC token verification. **Currently active — OIDC verification enabled.** |
 | `GOOGLE_ACCESS_TOKEN` | — | Legacy fallback (deprecated — use refresh token flow) |
-| `MAX_REPLIES_PER_SENDER_HOUR` | `5` | Per-sender email reply cap |
+| `MAX_REPLIES_PER_SENDER_DAY` | `10` | Per-sender email reply cap (1-day window) |
 | `MAX_INBOUND_PER_HOUR` | `100` | Global inbound circuit breaker |
 | `MAX_DAILY_SPEND_USD` | `25` | Daily AI API cost cap |
+| `CAMPAIGNS_ENABLED` | `false` | Must be `true` for live campaign sends |
+| `CAMPAIGN_EMAIL_PROVIDER` | `gmail` | Campaign sender: `gmail` or `resend` |
+| `CAMPAIGN_TEST_ADDRESS` | — | Recipient for campaign test-mode sends |
+| `RESEND_API_KEY` | — | Resend adapter (inert unless set) |
 
 ---
 
@@ -356,11 +419,12 @@ All customer-facing emails are sent via `compose_and_send`, which picks a templa
 | `quote` | Specific service identified, sends price |
 | `availability` | Customer asks for available times |
 | `booking_confirmation` | Booking created successfully |
-| `missing_info` | Required fields missing before booking |
+| `missing_info` | Consolidated checklist of all 5 booking fields (pre-filled + blanks) |
 | `reschedule` | Booking rescheduled |
 | `cancellation` | Booking cancelled |
 | `cancellation_fee_notice` | Cancellation within 24h notice window |
 | `waitlist_opening` | Waitlisted date has an opening |
+| `too_far_ahead` | Date beyond 6-month booking horizon |
 | `reminder` | Booking reminder (cron-triggered) |
 
 Each template uses a `pick()` function for variation (warm-professional tone). `validateOutboundFacts()` blocks any email whose dollar amounts don't match catalog prices.
@@ -401,6 +465,12 @@ Working hours: 08:00–17:00, Monday–Saturday. 30-minute buffer between appoin
 
 6. **Single-tenant** — One business, one Gmail account, one owner. The `authorized()` check is "are you the owner?" (via session or CRON_SECRET), not multi-tenant RBAC.
 
+7. **6-month booking horizon** — Hard lock in code, not a prompt instruction. `isWithinBookingHorizon()` computed in business timezone. Both `createBookingGuarded` and `getUpcomingAvailability` enforce it. The model cannot bypass it.
+
+8. **One-shot booking checklist** — Phase 2 sends all required fields in a single email (name, service, address+code, date, time) with known fields pre-filled. Never drips fields across multiple emails.
+
+9. **Campaign isolation** — The recurring-email engine lives entirely under `src/lib/campaigns/` with its own tables, route, and sender. Zero imports from the agent/automation/booking code. Can be removed without affecting the live system.
+
 ---
 
 ## File Structure
@@ -414,6 +484,7 @@ ai-ops-tool/
           [...nextauth]/route.ts   NextAuth handler
           token/route.ts           Token status check
         automation/route.ts        Start/stop toggle
+        campaigns/route.ts         Campaign engine API (isolated)
         chat/route.ts              Dashboard chat
         cron/
           process/route.ts         Scheduled email processing
@@ -428,14 +499,14 @@ ai-ops-tool/
       business.ts                  Business config (services, pricing, people)
       RULES.md                     Business rules (loaded at runtime)
     lib/
-      automation.ts                Core automation engine (~1800 lines)
+      automation.ts                Core automation engine (~2000 lines)
       auth.ts                      NextAuth config
       google-auth.ts               Refresh token + watch state (Neon)
       gmail.ts                     Gmail API wrapper
       calendar.ts                  Calendar API wrapper
-      booking-service.ts           Guarded booking operations
+      booking-service.ts           Guarded booking ops + 6-month horizon
       booking-phases.ts            Phase state machine
-      availability.ts              Slot computation
+      availability.ts              Slot computation (horizon-aware)
       clients-db.ts                Client/booking/inquiry CRUD
       catalog.ts                   Service catalog
       templates.ts                 Email templates + fact validation
@@ -445,10 +516,16 @@ ai-ops-tool/
       waitlist.ts                  Waitlist management
       llm.ts                       OpenAI-compatible LLM client
       ai.ts                        Dashboard chat
-      rate-guard.ts                Volume abuse guards
+      rate-guard.ts                Volume abuse guards (10/sender/day)
       rate-limit.ts                Token-bucket rate limiter
       webhook-verify.ts            Webhook auth utilities
       security-log.ts              Security event logging
+      campaigns/
+        sender.ts                  Gmail + Resend email adapters
+        templates.ts               Campaign template registry
+        audience.ts                Recipient CRUD + demo seeding
+        config.ts                  Campaign definitions
+        engine.ts                  Render/send/dedup engine
   next.config.ts                   Security headers
   verify.mjs                       Test suite (9 tests)
   SECURITY_AUDIT.md                Security gap analysis
