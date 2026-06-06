@@ -18,6 +18,8 @@ async function ensureTable() {
     status TEXT NOT NULL DEFAULT 'ok',
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`;
+  await sql`ALTER TABLE campaign_recipients ADD COLUMN IF NOT EXISTS opted_out BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE campaign_recipients ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok'`;
   _init = true;
 }
 

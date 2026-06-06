@@ -240,6 +240,7 @@ export async function runScheduled(
         error: res.error,
       });
     }
+    await sql`UPDATE scheduled_campaigns SET status = 'sent' WHERE id = ${Number(id)} AND status = 'scheduled'`;
     return { scheduledCampaignId: id, mode, date, rendered, results };
   }
 
@@ -265,6 +266,7 @@ export async function runScheduled(
     });
   }
 
+  await sql`UPDATE scheduled_campaigns SET status = 'sent' WHERE id = ${Number(id)} AND status = 'scheduled'`;
   return { scheduledCampaignId: id, mode, date, rendered, results };
 }
 

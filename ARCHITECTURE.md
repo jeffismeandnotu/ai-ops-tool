@@ -157,9 +157,11 @@ Phase 1 — QUOTE
     |
     v
 Phase 2 — COLLECT BOOKING DETAILS
+    Retrieve stored intent (get_booking_intent) + extract new
+    date/time/service from this message (set_booking_intent).
     Customer confirms service → send ONE consolidated checklist
-    (missing_info template) with all 5 booking fields:
-    name, service, address+code, date, time.
+    (missing_info template) with all 7 required booking fields:
+    name, phone, service, address+code, date, time.
     Known fields pre-filled; unknowns blank. Never drips fields.
     Customer names a date+time → check_slot validates it.
     All fields present + slot free → mark phase 2.
@@ -167,10 +169,33 @@ Phase 2 — COLLECT BOOKING DETAILS
     v
 Phase 3 — BOOK
     find_or_create_client → create_booking (DB + Calendar).
+    clear_booking_intent → remove session intent.
     Send booking_confirmation template. Done.
 ```
 
 Phase 1 records which message triggered it (`phase1_msg`). Phase 2 can only be marked on a *later* message — prevents booking on first contact.
+
+### Booking Intent (24h Session Store)
+Short-lived memory for in-flight date/time/service preferences. Stored in the `booking_intent` table (email PK, service_id, proposed_date, proposed_time, raw_quote, updated_at). Auto-expires after 24 hours; purged daily at 5 AM Vancouver via `/api/cron/purge-intent`.
+
+- **`set_booking_intent`** — called whenever the customer mentions a date, time, or service. Merge semantics (COALESCE — non-null wins).
+- **`get_booking_intent`** — called at the start of Phase 2 to recover preferences from prior messages within 24h.
+- **`clear_booking_intent`** — called after successful booking to clean up.
+
+Durable identity (name, phone, address) stays in the client record. Only ephemeral scheduling preferences live here.
+
+### Required Booking Fields (Single Source of Truth)
+`REQUIRED_BOOKING_FIELDS` constant in `automation.ts` — the canonical list of 7 fields required before a booking. Both `get_required_booking_fields` (tool response) and the `create_booking` guard (field completeness check) derive from this single constant.
+
+| # | Field | Note |
+|---|-------|------|
+| 1 | `clientName` | the client's name |
+| 2 | `clientEmail` | usually the sender's address |
+| 3 | `clientPhone` | the client's phone number |
+| 4 | `serviceId` | which service, from the catalog |
+| 5 | `date` | YYYY-MM-DD |
+| 6 | `startTime` | HH:MM, must be a free slot |
+| 7 | `address` | full service address incl. gate/entry/door code |
 
 ### Booking Horizon (6-month hard lock)
 No booking may be created or offered for a date more than 6 calendar months from today, computed in `BUSINESS.timezone`. Enforced in code:
@@ -208,6 +233,7 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 | `ai_google_auth` | Refresh tokens | email (PK), refresh_token |
 | `ai_gmail_watch` | Watch state (historyId + expiry) | email (PK), history_id, expiration |
 | `booking_phases` | 3-phase state machine per thread | thread_id (PK), phase, phase1_msg |
+| `booking_intent` | 24h session store for in-flight preferences | email (PK), service_id, proposed_date, proposed_time, raw_quote, updated_at |
 | `email_triage` | Classification audit log | message_id (PK), intent, confidence, risk |
 | `app_settings` | Key-value config (automation on/off) | key (PK), value |
 | `waitlist` | Waitlist entries for full dates | id, client_email, service_id, date |
@@ -224,8 +250,9 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `campaign_recipients` | Audience list (demo data by default) | id, email (unique), first_name, vars (JSONB), active |
-| `campaign_sends` | Exactly-once send ledger | id, campaign_id, recipient_email, send_date, status, provider, sent_at; UNIQUE(campaign_id, recipient_email, send_date) |
+| `campaign_recipients` | Audience list (demo data by default) | id, email (unique), first_name, vars (JSONB), active, opted_out, status |
+| `scheduled_campaigns` | Scheduled email jobs | id, name, template_id, audience, recipient_ids (JSONB), send_at, mode, status |
+| `campaign_sends` | Exactly-once send ledger | id, scheduled_campaign_id, recipient_email, send_date, status, provider, error, sent_at; UNIQUE(scheduled_campaign_id, recipient_email, send_date) |
 
 ---
 
@@ -246,9 +273,11 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 | `/api/cron/process` | GET | CRON_SECRET | Scheduled email processing |
 | `/api/cron/process` | POST | Session | Manual trigger from dashboard |
 | `/api/cron/reminders` | GET | CRON_SECRET | Send booking reminders |
+| `/api/cron/purge-intent` | GET | CRON_SECRET | Purge expired booking intents (daily 5 AM Vancouver) |
 | `/api/automation` | GET/POST | Session or CRON_SECRET | Read/toggle automation on/off |
-| `/api/campaigns` | GET | CRON_SECRET | List campaigns/templates, preview rendered emails, list recipients |
-| `/api/campaigns` | POST | CRON_SECRET | Run campaign (test/live mode), add/remove recipients |
+| `/api/campaigns` | GET | Session or CRON_SECRET | List templates/recipients/scheduled campaigns, preview rendered emails |
+| `/api/campaigns` | POST | Session or CRON_SECRET | Schedule/cancel/run campaigns, add/remove recipients. `run-due` is CRON_SECRET-only |
+| `/api/campaigns/webhook` | POST | Svix signature | Resend status webhook (bounced, complained, delivered) |
 | `/api/chat` | POST | Session | Dashboard chat interface |
 | `/api/ops` | GET | Session or CRON_SECRET | Operations dashboard data |
 
@@ -266,13 +295,14 @@ All tables are auto-created on first access. Neon Postgres (serverless driver `@
 
 | Module | Responsibility |
 |--------|---------------|
-| `automation.ts` | System prompt, 30+ tool definitions, tool executor, agent loop, cron/webhook entry points |
+| `automation.ts` | System prompt, 35+ tool definitions (incl. booking intent tools), REQUIRED_BOOKING_FIELDS constant, tool executor, agent loop, cron/webhook entry points |
 | `auth.ts` | NextAuth config, Google OAuth scopes, refresh token persistence |
 | `google-auth.ts` | Refresh token store (Neon), access token minting, Gmail watch state |
 | `gmail.ts` | Gmail API wrapper: read, send, draft, label, search, watch, history |
 | `calendar.ts` | Google Calendar API wrapper: list, create, update, delete events |
 | `booking-service.ts` | Guarded booking operations: create, reschedule, cancel (enforces catalog prices, slot validation, 24h cancellation policy) |
 | `booking-phases.ts` | 3-phase state machine (get/set/reset per thread) |
+| `booking-intent.ts` | 24h session store for in-flight booking preferences (get/set/clear/purge) |
 | `availability.ts` | Slot computation from bookings DB: `getAvailability`, `isSlotFree`, `getUpcomingAvailability` |
 | `clients-db.ts` | Client CRUD, booking CRUD, inquiries, quotes, email log, `getClientProfile()` (consolidated golden record), `mergeUpsertClient()` (merge-only upsert with address history, gate code scrubbing), duplicate detection |
 | `catalog.ts` | Service catalog lookup (`getService`, `listServices`, `requireService`) |
@@ -419,7 +449,7 @@ All customer-facing emails are sent via `compose_and_send`, which picks a templa
 | `quote` | Specific service identified, sends price |
 | `availability` | Customer asks for available times |
 | `booking_confirmation` | Booking created successfully |
-| `missing_info` | Consolidated checklist of all 5 booking fields (pre-filled + blanks) |
+| `missing_info` | Consolidated checklist of all 7 required booking fields (pre-filled + blanks) |
 | `reschedule` | Booking rescheduled |
 | `cancellation` | Booking cancelled |
 | `cancellation_fee_notice` | Cancellation within 24h notice window |
@@ -447,7 +477,7 @@ Each service has a `short` blurb (≤8 words) used in service-list replies, plus
 | `laundry` | Laundry Service | 90 min | $85 |
 | `commercial` | Commercial / Office Clean | 180 min | $280 |
 
-Working hours: 08:00–17:00, Monday–Saturday. 30-minute buffer between appointments. Timezone: America/Vancouver.
+Working hours: 08:00–17:00 Mon–Fri, 09:00–15:00 Sat & Sun. 30-minute buffer between appointments. Timezone: America/Vancouver.
 
 ---
 
@@ -467,7 +497,7 @@ Working hours: 08:00–17:00, Monday–Saturday. 30-minute buffer between appoin
 
 7. **6-month booking horizon** — Hard lock in code, not a prompt instruction. `isWithinBookingHorizon()` computed in business timezone. Both `createBookingGuarded` and `getUpcomingAvailability` enforce it. The model cannot bypass it.
 
-8. **One-shot booking checklist** — Phase 2 sends all required fields in a single email (name, service, address+code, date, time) with known fields pre-filled. Never drips fields across multiple emails.
+8. **One-shot booking checklist** — Phase 2 sends all 7 required fields in a single email (name, phone, service, address+code, date, time) with known fields pre-filled. Never drips fields across multiple emails. The `REQUIRED_BOOKING_FIELDS` constant is the single source of truth for what fields are required — both the tool response and the create_booking guard derive from it.
 
 9. **Campaign isolation** — The recurring-email engine lives entirely under `src/lib/campaigns/` with its own tables, route, and sender. Zero imports from the agent/automation/booking code. Can be removed without affecting the live system.
 
@@ -484,15 +514,20 @@ ai-ops-tool/
           [...nextauth]/route.ts   NextAuth handler
           token/route.ts           Token status check
         automation/route.ts        Start/stop toggle
-        campaigns/route.ts         Campaign engine API (isolated)
+        campaigns/
+          route.ts                 Campaign engine API (isolated)
+          webhook/route.ts         Resend status webhook
         chat/route.ts              Dashboard chat
         cron/
           process/route.ts         Scheduled email processing
           reminders/route.ts       Booking reminders
+          purge-intent/route.ts    Daily booking intent cleanup
         gmail/
           watch/route.ts           Arm/renew Gmail watch
           webhook/route.ts         Gmail Pub/Sub push handler
         ops/route.ts               Operations dashboard
+      components/
+        ScheduledEmailsPanel.tsx   Campaign dashboard panel
       page.tsx                     Dashboard UI
       layout.tsx                   Root layout
     config/
@@ -506,6 +541,7 @@ ai-ops-tool/
       calendar.ts                  Calendar API wrapper
       booking-service.ts           Guarded booking ops + 6-month horizon
       booking-phases.ts            Phase state machine
+      booking-intent.ts            24h intent session store
       availability.ts              Slot computation (horizon-aware)
       clients-db.ts                Client/booking/inquiry CRUD
       catalog.ts                   Service catalog
