@@ -43,7 +43,7 @@ export const BUSINESS = {
         thursday: { start: "08:00", end: "17:00" },
         friday: { start: "08:00", end: "17:00" },
         saturday: { start: "09:00", end: "15:00" },
-        sunday: null,
+        sunday: { start: "09:00", end: "15:00" },
       },
     },
     {
@@ -59,7 +59,7 @@ export const BUSINESS = {
         thursday: { start: "08:00", end: "17:00" },
         friday: { start: "08:00", end: "17:00" },
         saturday: null,
-        sunday: null,
+        sunday: { start: "09:00", end: "15:00" },
       },
     },
   ],
@@ -253,7 +253,7 @@ Price: \${{price}} CAD
   calendar: {
     bufferMinutes: 30,
     workingHours: { start: "08:00", end: "17:00" },
-    workingDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+    workingDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
     colorCodes: {
       regular: "9",
       deep: "5",
@@ -303,7 +303,7 @@ Business context:
 - Based in Whistler, BC — many clients are vacation rental and Airbnb property managers
 - Turnover cleans between guest stays are time-sensitive
 - Many properties require supply restocking (linens, toiletries)
-- Operating hours: 8am-5pm Mon-Fri, 9am-3pm Saturday
+- Operating hours: 8am-5pm Mon-Fri, 9am-3pm Saturday & Sunday
 - {{bufferMinutes}}-minute buffer between appointments
 - Always check calendar before confirming
 - CC the owner on all bookings and cancellations`,

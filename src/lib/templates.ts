@@ -176,7 +176,7 @@ export function availabilityEmail(o: {
   ]);
   const dayBlocks = o.days
     .map((d) => {
-      const header = `${d.weekday}, ${prettyDate(d.date).split(", ").pop()}`;
+      const header = prettyDate(d.date);
       const lines = d.slots.map((s) => `    • ${prettySlot(s)}`).join("\n");
       return `  ${header}\n${lines}`;
     })
@@ -232,6 +232,7 @@ export function missingInfoEmail(o: {
   serviceName?: string;
   knownFields?: {
     name?: string;
+    phone?: string;
     address?: string;
     date?: string;
     time?: string;
@@ -253,6 +254,12 @@ export function missingInfoEmail(o: {
     lines.push(`  • Full name: ${k.name} — reply to confirm or correct`);
   } else {
     lines.push(`  • Full name: (please provide)`);
+  }
+
+  if (k.phone) {
+    lines.push(`  • Phone number: ${k.phone} — reply to confirm or correct`);
+  } else {
+    lines.push(`  • Phone number: (please provide)`);
   }
 
   lines.push(`  • Service: ${svc}`);

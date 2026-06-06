@@ -123,10 +123,21 @@ import { recordClassification, scanRisk } from "@/lib/triage";
 import { runAllGuards } from "@/lib/rate-guard";
 import { logSecurityEvent } from "@/lib/security-log";
 import * as waitlist from "@/lib/waitlist";
+import * as bookingIntent from "@/lib/booking-intent";
 import * as fs from "fs";
 import * as path from "path";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+
+export const REQUIRED_BOOKING_FIELDS = [
+  { field: "clientName", note: "the client's name" },
+  { field: "clientEmail", note: "usually the sender's address" },
+  { field: "clientPhone", note: "the client's phone number" },
+  { field: "serviceId", note: "which service, from the catalog" },
+  { field: "date", note: "YYYY-MM-DD" },
+  { field: "startTime", note: "HH:MM, must be a free slot from get_availability" },
+  { field: "address", note: "the full service address, including any gate/entry/door code needed for access" },
+] as const;
 
 function normalizeDate(d: any): string {
   if (d instanceof Date) return d.toISOString().slice(0, 10);
@@ -244,6 +255,8 @@ Every booking conversation moves through phase 0 -> 1 -> 2 -> 3. Call get_phase(
 PHASE 1 — QUOTE:
 Goal: identify the service, send the price, ask for their preferred day/time.
 
+FIRST: Always extract any date, time, and service the customer mentions. If the customer names ANY of these, call set_booking_intent(email, serviceId?, proposedDate?, proposedTime?, rawQuote) to store them BEFORE doing anything else. This captures their intent even if you can't act on all of it yet.
+
 Step 1: Does their message specify a service?
   NO  → infer the 1-3 services most relevant to what the customer described (space type, one-time vs recurring, any specifics) and call compose_and_send template "services_list" passing those serviceIds. If the message gives no usable signal at all, call it with no serviceIds (brief default shortlist). Never present more than 3 services, never include long descriptions — the template handles the format. STOP.
   YES → identify the service from the catalog. Go to step 2.
@@ -254,17 +267,20 @@ Step 2: Send compose_and_send template "quote" with serviceId and NO slots.
   Do NOT mention or offer any specific dates or times.
   STOP. (Sending the quote auto-marks phase 1.)
 
-If the customer's first email already names a specific service AND a specific date/time, send the quote (no slots) — they will confirm the time in their reply. Never skip to booking on first contact.
+If the customer's first email already names a specific service AND a specific date/time, store the intent via set_booking_intent, then send the quote (no slots) — they will confirm the time in their reply. Never skip to booking on first contact.
 
 --- PHASE 1 (quote sent) → do PHASE 2 work ---
 
 PHASE 2 — COLLECT BOOKING DETAILS:
 Goal: the customer is replying to your quote. Collect ALL required booking fields in ONE email, never drip them across multiple emails.
 
-ACTION A — Customer NAMES A SPECIFIC DATE+TIME (e.g. "Tuesday at 10", "June 10 2 PM", "the 10:30 slot"):
+FIRST: Always extract any date, time, or service the customer mentions in THIS message. Call set_booking_intent to store/update them. Then call get_booking_intent(email) to retrieve the FULL accumulated intent (this message + any prior within 24h). Use the intent fields as the customer's stated preference for all downstream actions.
+
+ACTION A — Customer NAMES A SPECIFIC DATE+TIME (in this message OR via stored intent):
+  If the current message names a date+time, use those. If the current message only names a date (or only a time) but the stored intent has the missing piece, combine them. The intent is the customer's preference — honor it.
   1. Call check_slot(date, serviceId, time) — the ONLY correct tool for validating a single time.
      - NEVER call get_availability here. Do NOT call get_upcoming_availability. Do NOT send the availability template.
-  2. If free=true: check ALL required fields (name, email, service, date, time, address).
+  2. If free=true: check ALL required fields (name, email, phone, service, date, time, address).
      - All present → mark_phase_complete(2), go immediately to Phase 3.
      - ANY missing → send ONE consolidated "missing_info" checklist (see CHECKLIST below). STOP.
   3. If free=false: tell them briefly it's taken, then call get_upcoming_availability and send "availability" with alternatives. STOP.
@@ -277,11 +293,13 @@ ACTION C — Customer ASKS TO SEE AVAILABILITY ("what times do you have?", "when
   They will pick a time in their next reply → that reply triggers ACTION A.
 
 ACTION D — Customer asks a question or changes their service choice:
-  Answer the question or update the service. Send a new quote if the service changed. STOP.
+  Answer the question or update the service (and update intent via set_booking_intent). Send a new quote if the service changed. STOP.
 
-CHECKLIST: use compose_and_send template "missing_info" with serviceName and any known profile fields (knownName, knownAddress, knownDate, knownTime). The template shows ALL 5 required booking fields in one email: known fields pre-filled for confirmation, unknown fields blank. This is the ONLY email that collects booking details — never ask for individual fields across separate emails.
+CHECKLIST: use compose_and_send template "missing_info" with serviceName and any known profile fields (knownName, knownPhone, knownAddress, knownDate, knownTime). The template shows ALL required booking fields in one email: name, phone, service, address (with gate/entry/door code), date, time — known fields pre-filled for confirmation, unknown fields blank. This is the ONLY email that collects booking details — never ask for individual fields across separate emails.
 
 CRITICAL: once the customer picks a time from an availability list you sent, NEVER re-send that availability list. Go straight to ACTION A.
+
+BOOKING INTENT: The booking_intent table is a 24h session store for the customer's in-flight date/time/service preference. It is NOT durable identity — name, address, phone go in the client record (find_or_create_client / save_client_info). The intent auto-expires after 24 hours and is purged by a daily cron. Always call set_booking_intent when the customer mentions a date, time, or service. Always call get_booking_intent at the start of Phase 2 to recover preferences from prior messages. After a successful booking, call clear_booking_intent to clean up.
 
 DATE RULE: When stating or requesting any date, always write it as Month D, YYYY (e.g. "June 11, 2026") — never a bare ISO date and never an ambiguous numeric format.
 
@@ -292,7 +310,7 @@ BOOKING HORIZON: No booking may be created or offered for a date more than 6 cal
 PHASE 3 — BOOK:
   1. find_or_create_client to get clientId.
   2. create_booking with { clientConfirmed:true, confirmationEvidence:(their exact words), threadId, clientId, serviceId, date, startTime (HH:MM 24h), address, clientName, clientEmail }.
-  3. If success → send compose_and_send template "booking_confirmation" with bookingId. Done.
+  3. If success → call clear_booking_intent(email) to remove the session intent, then send compose_and_send template "booking_confirmation" with bookingId. Done.
   4. If slot taken (alternatives returned) → offer those exact alternatives and STOP. The customer picks one → back to step 2.
 
 --- PHASE 3 (booked) → post-booking only ---
@@ -529,6 +547,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         missing: { type: "array", items: { type: "string" }, description: "for missing_info: which fields are missing" },
         serviceName: { type: "string", description: "for missing_info/too_far_ahead: the confirmed service name (e.g. 'Regular Clean')" },
         knownName: { type: "string", description: "for missing_info: client's full name if already known from profile" },
+        knownPhone: { type: "string", description: "for missing_info: client's phone number if already known from profile" },
         knownAddress: { type: "string", description: "for missing_info: service address if already known from profile (include access codes)" },
         knownDate: { type: "string", description: "for missing_info: preferred date if already known (formatted, e.g. 'June 11, 2026')" },
         knownTime: { type: "string", description: "for missing_info: preferred time if already known (e.g. '10:00 AM')" },
@@ -645,6 +664,7 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         address: { type: "string" },
         clientName: { type: "string" },
         clientEmail: { type: "string" },
+        clientPhone: { type: "string", description: "Client phone number" },
         employeeName: { type: "string" },
         employeeEmail: { type: "string" },
         notes: { type: "string" },
@@ -857,6 +877,46 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "get_booking_intent",
+    description:
+      "Retrieve a returning customer's in-flight booking intent (service, date, time) if one was stored within the last 24 hours. Call this early in Phase 2 to check whether the customer already expressed preferences in a prior message. Returns null if no intent exists or it has expired.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string", description: "Customer email address" },
+      },
+      required: ["email"],
+    },
+  },
+  {
+    name: "set_booking_intent",
+    description:
+      "Store the customer's expressed booking preferences (service, date, time) as a short-lived intent. Call this whenever the customer names a service, date, or time — even partially. The intent merges with any existing fields (non-null wins) and auto-expires after 24 hours. Durable facts (name, address, phone) still go to find_or_create_client / save_client_info — never here.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string", description: "Customer email address" },
+        serviceId: { type: "string", description: "Service ID if the customer named one" },
+        proposedDate: { type: "string", description: "YYYY-MM-DD if the customer named a date" },
+        proposedTime: { type: "string", description: "HH:MM (24h) if the customer named a time" },
+        rawQuote: { type: "string", description: "The customer's exact words about date/time/service" },
+      },
+      required: ["email"],
+    },
+  },
+  {
+    name: "clear_booking_intent",
+    description:
+      "Remove a customer's booking intent after a booking is successfully created, or if the customer explicitly changes their mind about all preferences. Do NOT clear on partial changes — use set_booking_intent to update individual fields instead.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        email: { type: "string", description: "Customer email address" },
+      },
+      required: ["email"],
+    },
+  },
+  {
     name: "cancel_booking_record",
     description: "Update a booking record to cancelled status in the database.",
     input_schema: {
@@ -942,8 +1002,8 @@ async function executeTool(
         }
         const guide: Record<string, string> = {
           general_inquiry: "Answer their question helpfully using get_service/get_availability, then invite them to book (Phase 1).",
-          booking_request: "Booking flow — call get_phase(threadId) and follow its guidance exactly. If the customer names a specific time, validate it with check_slot (NOT get_availability).",
-          booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Validate with check_slot(date, serviceId, time). Do NOT use get_availability here. If free=true check fields and book.",
+          booking_request: "Booking flow — extract any date/time/service the customer mentioned and call set_booking_intent, then call get_phase(threadId) and follow its guidance exactly. If the customer names a specific time, validate it with check_slot (NOT get_availability).",
+          booking_confirmation: "Booking flow — extract any date/time/service and call set_booking_intent, then call get_phase(threadId). Call get_booking_intent to recover stored preferences. The customer is naming/confirming a time. Validate with check_slot(date, serviceId, time). Do NOT use get_availability here. If free=true check fields and book.",
           missing_info: "Send compose_and_send template 'missing_info' with the full booking checklist (serviceName + known profile fields); stay in the current phase.",
           reschedule: "get_client_history → reschedule_booking; send template 'reschedule'. Reschedules are free.",
           cancellation: "get_client_history → cancel_booking. Let the tool decide the 24h policy; never decide it yourself.",
@@ -985,8 +1045,8 @@ async function executeTool(
       case "get_phase": {
         const st = await getPhase(input.threadId || "");
         const guide: Record<number, string> = {
-          0: "Do PHASE 1: identify the service, send a price-only quote (no times), ask what day/time suits them. Do NOT call get_availability or get_upcoming_availability yet.",
-          1: "Do PHASE 2: the customer is replying to your quote. If they name a date+time → call check_slot to validate; if free + ALL fields present → mark_phase_complete(2) and book; if free but any fields missing → send ONE 'missing_info' checklist (pass serviceName, knownName, knownAddress, knownDate, knownTime from profile) and STOP. If they confirm service without all details → send the 'missing_info' checklist. Never drip fields across multiple emails. If they ask for availability → send availability template. If a requested date is >6 months out → send 'too_far_ahead' template.",
+          0: "Do PHASE 1: extract any date/time/service from the customer's message and call set_booking_intent if present. Then identify the service, send a price-only quote (no times), ask what day/time suits them. Do NOT call get_availability or get_upcoming_availability yet.",
+          1: "Do PHASE 2: extract any date/time/service and call set_booking_intent. Then call get_booking_intent(email) to retrieve accumulated preferences. If the customer (or stored intent) has a date+time → call check_slot to validate; if free + ALL fields present → mark_phase_complete(2) and book; if free but any fields missing → send ONE 'missing_info' checklist (pass serviceName, knownName, knownAddress, knownDate, knownTime from profile) and STOP. If they confirm service without all details → send the 'missing_info' checklist. Never drip fields across multiple emails. If they ask for availability → send availability template. If a requested date is >6 months out → send 'too_far_ahead' template.",
           2: "Do PHASE 3: find_or_create_client, then create_booking. On success send booking_confirmation. If slot taken, offer the alternatives returned.",
           3: "Already booked. Only handle reschedules, cancellations, or address/notes changes.",
         };
@@ -1021,14 +1081,7 @@ async function executeTool(
       }
       case "get_required_booking_fields": {
         return JSON.stringify({
-          requiredBeforeBooking: [
-            { field: "clientName", note: "the client's name" },
-            { field: "clientEmail", note: "usually the sender's address" },
-            { field: "serviceId", note: "which service, from the catalog" },
-            { field: "date", note: "YYYY-MM-DD" },
-            { field: "startTime", note: "HH:MM, must be a free slot from get_availability" },
-            { field: "address", note: "the service address" },
-          ],
+          requiredBeforeBooking: REQUIRED_BOOKING_FIELDS,
           rule: "All of these must be present AND the client must have confirmed before you call create_booking. Ask for any missing field with a missing_info email and stop.",
         });
       }
@@ -1178,6 +1231,7 @@ async function executeTool(
             serviceName: input.serviceName,
             knownFields: {
               name: input.knownName || undefined,
+              phone: input.knownPhone || undefined,
               address: input.knownAddress || undefined,
               date: input.knownDate || undefined,
               time: input.knownTime || undefined,
@@ -1378,17 +1432,9 @@ async function executeTool(
           });
         }
         // Field completeness — all required booking fields must be present.
-        const requiredFields: Record<string, any> = {
-          clientName: input.clientName,
-          clientEmail: input.clientEmail,
-          serviceId: input.serviceId,
-          date: input.date,
-          startTime: input.startTime,
-          address: input.address,
-        };
-        const missingFields = Object.entries(requiredFields)
-          .filter(([, v]) => !String(v ?? "").trim())
-          .map(([k]) => k);
+        const missingFields = REQUIRED_BOOKING_FIELDS
+          .map((f) => f.field)
+          .filter((k) => !String(input[k] ?? "").trim());
         if (missingFields.length) {
           return JSON.stringify({
             success: false,
@@ -1403,6 +1449,11 @@ async function executeTool(
             blocked: true,
             reason: "Pass clientConfirmed:true and the client's own confirming words as confirmationEvidence.",
           });
+        }
+        if (input.clientPhone && input.clientEmail) {
+          try {
+            await clientsDb.mergeUpsertClient(input.clientEmail, { phone: input.clientPhone });
+          } catch {}
         }
         const r = await bookingService.createBookingGuarded(accessToken, {
           clientId: input.clientId,
@@ -1652,6 +1703,24 @@ async function executeTool(
           specialInstructions: input.specialInstructions,
         });
         return JSON.stringify({ success: true, client: merged });
+      }
+      case "get_booking_intent": {
+        const intent = await bookingIntent.getIntent(input.email);
+        if (!intent) return JSON.stringify({ intent: null, note: "No active intent within 24h for this customer." });
+        return JSON.stringify({ intent }, null, 2);
+      }
+      case "set_booking_intent": {
+        const updated = await bookingIntent.setIntent(input.email, {
+          serviceId: input.serviceId,
+          proposedDate: input.proposedDate,
+          proposedTime: input.proposedTime,
+          rawQuote: input.rawQuote,
+        });
+        return JSON.stringify({ success: true, intent: updated });
+      }
+      case "clear_booking_intent": {
+        await bookingIntent.clearIntent(input.email);
+        return JSON.stringify({ success: true, cleared: true });
       }
       case "cancel_booking_record": {
         const booking = await clientsDb.getBookingByCalendarEvent(input.calendarEventId);
