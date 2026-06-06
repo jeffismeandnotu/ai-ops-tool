@@ -118,7 +118,7 @@ import { getPhase, setPhase } from "@/lib/booking-phases";
 import * as catalog from "@/lib/catalog";
 import * as availability from "@/lib/availability";
 import * as bookingService from "@/lib/booking-service";
-import { validateOutboundFacts, servicesListEmail, quoteEmail, availabilityEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening } from "@/lib/templates";
+import { validateOutboundFacts, servicesListEmail, quoteEmail, availabilityEmail, bookingConfirmation, missingInfoEmail, rescheduleConfirmation, cancellationConfirmation, cancellationFeeNotice, waitlistOpening, tooFarAheadEmail } from "@/lib/templates";
 import { recordClassification, scanRisk } from "@/lib/triage";
 import { runAllGuards } from "@/lib/rate-guard";
 import { logSecurityEvent } from "@/lib/security-log";
@@ -258,26 +258,34 @@ If the customer's first email already names a specific service AND a specific da
 
 --- PHASE 1 (quote sent) → do PHASE 2 work ---
 
-PHASE 2 — VALIDATE & CONFIRM:
-Goal: the customer is replying to your quote. Determine what they said and take ONE of these actions:
+PHASE 2 — COLLECT BOOKING DETAILS:
+Goal: the customer is replying to your quote. Collect ALL required booking fields in ONE email, never drip them across multiple emails.
 
 ACTION A — Customer NAMES A SPECIFIC DATE+TIME (e.g. "Tuesday at 10", "June 10 2 PM", "the 10:30 slot"):
   1. Call check_slot(date, serviceId, time) — the ONLY correct tool for validating a single time.
-     - NEVER call get_availability here. get_availability is for LISTING slots, not validating.
-     - Do NOT call get_upcoming_availability. Do NOT send the availability template.
-  2. If free=true: check required fields (name, email, service, date, time, address).
+     - NEVER call get_availability here. Do NOT call get_upcoming_availability. Do NOT send the availability template.
+  2. If free=true: check ALL required fields (name, email, service, date, time, address).
      - All present → mark_phase_complete(2), go immediately to Phase 3.
-     - Missing fields → send "missing_info" for only what's missing. STOP.
+     - ANY missing → send ONE consolidated "missing_info" checklist (see CHECKLIST below). STOP.
   3. If free=false: tell them briefly it's taken, then call get_upcoming_availability and send "availability" with alternatives. STOP.
 
-ACTION B — Customer ASKS TO SEE AVAILABILITY ("what times do you have?", "when are you free?"):
+ACTION B — Customer CONFIRMS the service but does NOT provide all details:
+  Send ONE consolidated "missing_info" checklist (see CHECKLIST below). STOP.
+
+ACTION C — Customer ASKS TO SEE AVAILABILITY ("what times do you have?", "when are you free?"):
   Call get_upcoming_availability(serviceId), send compose_and_send template "availability". STOP.
   They will pick a time in their next reply → that reply triggers ACTION A.
 
-ACTION C — Customer asks a question or changes their service choice:
+ACTION D — Customer asks a question or changes their service choice:
   Answer the question or update the service. Send a new quote if the service changed. STOP.
 
+CHECKLIST: use compose_and_send template "missing_info" with serviceName and any known profile fields (knownName, knownAddress, knownDate, knownTime). The template shows ALL 5 required booking fields in one email: known fields pre-filled for confirmation, unknown fields blank. This is the ONLY email that collects booking details — never ask for individual fields across separate emails.
+
 CRITICAL: once the customer picks a time from an availability list you sent, NEVER re-send that availability list. Go straight to ACTION A.
+
+DATE RULE: When stating or requesting any date, always write it as Month D, YYYY (e.g. "June 11, 2026") — never a bare ISO date and never an ambiguous numeric format.
+
+BOOKING HORIZON: No booking may be created or offered for a date more than 6 calendar months from today. If a customer asks to book beyond the horizon, send compose_and_send template "too_far_ahead" and STOP — do not book, do not offer alternatives.
 
 --- PHASE 2 (confirmed) → do PHASE 3 work ---
 
@@ -495,13 +503,13 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
   {
     name: "compose_and_send",
     description:
-      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (brief 1-3 service recommendation with one-line blurbs — pass serviceIds for the most relevant services, or omit for a default shortlist; never shows the full catalog), quote (specific service — default: no slots, asks customer for their preferred time; pass slots only if showing availability on request), availability (multi-day availability listing from get_upcoming_availability), booking_confirmation, missing_info, reschedule, cancellation, cancellation_fee_notice. (Plain send_email is for internal/owner notes only.)",
+      "The ONLY way to send a customer-facing email. Picks a fixed template and fills it from source-of-truth data — you do not write the body. Templates: services_list (brief 1-3 service recommendation), quote (specific service — default: no slots), availability (multi-day listing), booking_confirmation, missing_info (ONE consolidated checklist of ALL booking fields — pass serviceName + knownName/knownAddress/knownDate/knownTime for pre-filled fields; unknown fields show as blanks; never drip fields across multiple emails), reschedule, cancellation, cancellation_fee_notice, too_far_ahead (date beyond 6-month horizon). (Plain send_email is for internal/owner notes only.)",
     input_schema: {
       type: "object" as const,
       properties: {
         template: {
           type: "string",
-          enum: ["services_list", "quote", "availability", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice"],
+          enum: ["services_list", "quote", "availability", "booking_confirmation", "missing_info", "reschedule", "cancellation", "cancellation_fee_notice", "too_far_ahead"],
         },
         to: { type: "array", items: { type: "string" } },
         cc: { type: "array", items: { type: "string" } },
@@ -517,8 +525,13 @@ const AUTOMATION_TOOLS: Anthropic.Tool[] = [
         offerContract: { type: "boolean", description: "for quote: true if the request signals recurring/commercial work" },
         // booking_confirmation / reschedule / cancellation
         bookingId: { type: "string", description: "for booking_confirmation/reschedule/cancellation: the booking id" },
-        // missing_info
+        // missing_info — consolidated checklist
         missing: { type: "array", items: { type: "string" }, description: "for missing_info: which fields are missing" },
+        serviceName: { type: "string", description: "for missing_info/too_far_ahead: the confirmed service name (e.g. 'Regular Clean')" },
+        knownName: { type: "string", description: "for missing_info: client's full name if already known from profile" },
+        knownAddress: { type: "string", description: "for missing_info: service address if already known from profile (include access codes)" },
+        knownDate: { type: "string", description: "for missing_info: preferred date if already known (formatted, e.g. 'June 11, 2026')" },
+        knownTime: { type: "string", description: "for missing_info: preferred time if already known (e.g. '10:00 AM')" },
       },
       required: ["template", "to"],
     },
@@ -931,7 +944,7 @@ async function executeTool(
           general_inquiry: "Answer their question helpfully using get_service/get_availability, then invite them to book (Phase 1).",
           booking_request: "Booking flow — call get_phase(threadId) and follow its guidance exactly. If the customer names a specific time, validate it with check_slot (NOT get_availability).",
           booking_confirmation: "Booking flow — call get_phase(threadId). The customer is naming/confirming a time. Validate with check_slot(date, serviceId, time). Do NOT use get_availability here. If free=true check fields and book.",
-          missing_info: "Send compose_and_send template 'missing_info' for the unknown field; stay in the current phase.",
+          missing_info: "Send compose_and_send template 'missing_info' with the full booking checklist (serviceName + known profile fields); stay in the current phase.",
           reschedule: "get_client_history → reschedule_booking; send template 'reschedule'. Reschedules are free.",
           cancellation: "get_client_history → cancel_booking. Let the tool decide the 24h policy; never decide it yourself.",
           contract: "Quote the standard catalog price AND include the contract line, then notify_owner to set the contract rate. Never invent a rate.",
@@ -973,7 +986,7 @@ async function executeTool(
         const st = await getPhase(input.threadId || "");
         const guide: Record<number, string> = {
           0: "Do PHASE 1: identify the service, send a price-only quote (no times), ask what day/time suits them. Do NOT call get_availability or get_upcoming_availability yet.",
-          1: "Do PHASE 2: the customer is replying to your quote. Read their message: (A) If they NAME a specific date+time → call check_slot(date, serviceId, time) to validate it — do NOT call get_availability or get_upcoming_availability, do NOT re-send availability. If free=true + all fields present → mark_phase_complete(2) and book. If free=false → show alternatives via get_upcoming_availability. (B) If they ASK for availability without naming a time → call get_upcoming_availability and send availability template. (C) If they ask a question → answer it.",
+          1: "Do PHASE 2: the customer is replying to your quote. If they name a date+time → call check_slot to validate; if free + ALL fields present → mark_phase_complete(2) and book; if free but any fields missing → send ONE 'missing_info' checklist (pass serviceName, knownName, knownAddress, knownDate, knownTime from profile) and STOP. If they confirm service without all details → send the 'missing_info' checklist. Never drip fields across multiple emails. If they ask for availability → send availability template. If a requested date is >6 months out → send 'too_far_ahead' template.",
           2: "Do PHASE 3: find_or_create_client, then create_booking. On success send booking_confirmation. If slot taken, offer the alternatives returned.",
           3: "Already booked. Only handle reschedules, cancellations, or address/notes changes.",
         };
@@ -1160,7 +1173,19 @@ async function executeTool(
           });
           allowedPrices = [Number(b.price)];
         } else if (t === "missing_info") {
-          built = missingInfoEmail({ firstName: input.firstName, missing: input.missing || [] });
+          built = missingInfoEmail({
+            firstName: input.firstName,
+            serviceName: input.serviceName,
+            knownFields: {
+              name: input.knownName || undefined,
+              address: input.knownAddress || undefined,
+              date: input.knownDate || undefined,
+              time: input.knownTime || undefined,
+            },
+            missing: input.missing || [],
+          });
+        } else if (t === "too_far_ahead") {
+          built = tooFarAheadEmail({ firstName: input.firstName });
         } else if (t === "reschedule") {
           const b = await clientsDb.getBookingById(input.bookingId);
           if (!b) return JSON.stringify({ success: false, error: `Booking '${input.bookingId}' not found` });
