@@ -15,7 +15,7 @@
     },
     {
       "path": "/api/campaigns?action=run-due&secret=${CRON_SECRET}",
-      "schedule": "*/5 * * * *"
+      "schedule": "59 * * * *"
     }
   ]
 }
