@@ -12,10 +12,6 @@
     {
       "path": "/api/cron/purge-intent?secret=${CRON_SECRET}",
       "schedule": "0 12 * * *"
-    },
-    {
-      "path": "/api/campaigns?action=run-due&secret=${CRON_SECRET}",
-      "schedule": "*/5 * * * *"
     }
   ]
 }

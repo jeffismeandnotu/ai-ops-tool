@@ -60,6 +60,7 @@ export async function GET(req: NextRequest) {
   }
 
   if (action === "scheduled") {
+    await runDue().catch(() => {});
     const campaigns = await listScheduledCampaigns();
     return json({ campaigns });
   }
