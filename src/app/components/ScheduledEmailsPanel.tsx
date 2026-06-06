@@ -292,7 +292,7 @@ export default function ScheduledEmailsPanel() {
               className="text-[11px] font-medium py-1 px-3 rounded-full transition-all active:scale-[0.95] disabled:opacity-50"
               style={{ color: "var(--accent)", background: "var(--accent-light)" }}
             >
-              {runBusy ? "Running..." : "Run due now"}
+              {runBusy ? "Running..." : "Run due now (test)"}
             </button>
           </div>
 
@@ -363,7 +363,7 @@ export default function ScheduledEmailsPanel() {
                           className="text-[11px] font-medium py-1 px-2.5 rounded-full transition-all active:scale-[0.95] disabled:opacity-50"
                           style={{ color: "#fff", background: "var(--accent)" }}
                         >
-                          Send test
+                          Run now (test)
                         </button>
                         <button
                           onClick={() => handleCancel(c.id)}
