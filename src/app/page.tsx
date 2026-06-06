@@ -1,6 +1,7 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
+import ScheduledEmailsPanel from "./components/ScheduledEmailsPanel";
 
 interface Message {
   role: "user" | "assistant";
@@ -79,9 +80,6 @@ export default function Home() {
   if (!session) return (
     <div className="h-full flex items-center justify-center px-6" style={{ background: "var(--bg-surface)" }}>
       <div className="w-full max-w-sm text-center">
-        <div className="w-14 h-14 rounded-full mx-auto mb-5 flex items-center justify-center" style={{ background: "var(--accent-light)" }}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
-        </div>
         <h1 className="text-xl font-semibold mb-0.5" style={{ color: "var(--text-primary)" }}>Glow Cleaning</h1>
         <p className="text-sm mb-7" style={{ color: "var(--text-muted)" }}>Operations Dashboard</p>
         <button onClick={() => signIn("google")} className="w-full py-3 rounded-full text-sm font-medium transition-all active:scale-[0.98]" style={{ background: "var(--accent)", color: "#fff", boxShadow: "var(--shadow-md)" }}>
@@ -97,11 +95,8 @@ export default function Home() {
 
       {/* Header */}
       <header className="safe-top flex items-center justify-between px-4 pb-4 z-50" style={{ background: "var(--bg-card)", borderBottom: "1px solid var(--border)", boxShadow: "var(--shadow-sm)" }}>
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "var(--accent-light)" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
-          </div>
-          <span className="text-[15px] font-semibold" style={{ color: "var(--text-primary)" }}>Glow Cleaning</span>
+        <div className="flex items-center">
+          <span className="text-[15px] font-semibold pl-0.5" style={{ color: "var(--text-primary)" }}>Glow Cleaning</span>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={toggleAuto} disabled={toggling || autoEnabled === null}
@@ -248,6 +243,9 @@ export default function Home() {
               <pre className="text-[11px] leading-relaxed overflow-x-auto whitespace-pre-wrap" style={{ color: "var(--text-primary)" }}>{autoResult}</pre>
             </div>
           )}
+
+          {/* Scheduled Emails */}
+          <ScheduledEmailsPanel />
         </div>
       )}
 
