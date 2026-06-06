@@ -41,6 +41,12 @@ Before sending any email or creating any calendar event, verify ALL of these:
 - Always include "If you need to make any changes, just reply to this email" in confirmations
 - Always log every action to the ops log with log_operation before marking an email as done
 
+## DATE FORMAT RULE
+- When stating or requesting any date, always write it as Month D, YYYY (e.g. "June 11, 2026") — never a bare ISO date (2026-06-11) and never an ambiguous numeric date (6/11/26). This applies to every customer-facing email, slot listing, and booking detail.
+
+## BOOKING HORIZON RULE
+- No booking may be created or offered for a date more than 6 calendar months from today. If a customer asks to book a date more than 6 months out, do not book it — reply with the too_far_ahead template and ask them to reach back out within six months of their preferred date. The agent must never book or offer anything past the 6-month line.
+
 ## EMAIL TONE RULES
 - First sentence: directly address what they asked for. No filler.
 - Keep emails under 150 words for simple confirmations, under 200 for quotes

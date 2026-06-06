@@ -18,7 +18,7 @@ function prettySlot(label: string): string {
   const [, y, mo, d, hh, mi] = m;
   const dt = new Date(Date.UTC(+y, +mo - 1, +d, 12, 0, 0));
   const weekday = dt.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
-  const monthDay = dt.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+  const monthDay = dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
   let h = +hh;
   const ampm = h >= 12 ? "PM" : "AM";
   h = h % 12 || 12;
@@ -39,7 +39,7 @@ function prettyDate(iso: string): string {
   if (!m) return iso;
   const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12, 0, 0));
   const weekday = dt.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
-  const monthDay = dt.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+  const monthDay = dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
   return `${weekday}, ${monthDay}`;
 }
 
@@ -229,34 +229,84 @@ export function bookingConfirmation(o: {
 
 export function missingInfoEmail(o: {
   firstName?: string;
-  missing: string[];
-  voice?: string;
-}): { subject: string; body: string } {
-  const opener = pick([
-    "Thank you for your inquiry.",
-    "We would be happy to help.",
-    "Thank you for reaching out.",
-  ]);
-  const askIntro = pick([
-    "To proceed, we need the following:",
-    "Before we can book, could you provide:",
-    "We just need a couple of details:",
-  ]);
-  const human: Record<string, string> = {
-    address: "the service address",
-    date: "your preferred date",
-    startTime: "a preferred time",
-    service: "which service you'd like",
-    name: "your name",
+  serviceName?: string;
+  knownFields?: {
+    name?: string;
+    address?: string;
+    date?: string;
+    time?: string;
   };
-  const asks = o.missing.map((m) => human[m] || m).join(", ");
+  missing: string[];
+}): { subject: string; body: string } {
+  const svc = o.serviceName || "your cleaning";
+  const k = o.knownFields || {};
+
+  const opener = pick([
+    `Thank you for confirming — a ${svc} it is.`,
+    `We would be happy to get your ${svc} booked.`,
+    `Thank you — let us get your ${svc} set up.`,
+  ]);
+
+  const lines: string[] = [];
+
+  if (k.name) {
+    lines.push(`  • Full name: ${k.name} — reply to confirm or correct`);
+  } else {
+    lines.push(`  • Full name: (please provide)`);
+  }
+
+  lines.push(`  • Service: ${svc}`);
+
+  if (k.address) {
+    lines.push(`  • Service address (including any gate / entry / door code): ${k.address} — reply to confirm or correct`);
+  } else {
+    lines.push(`  • Service address (including any gate / entry / door code): (please provide)`);
+  }
+
+  if (k.date) {
+    lines.push(`  • Preferred date: ${k.date} — reply to confirm or correct`);
+  } else {
+    lines.push(`  • Preferred date (e.g. June 11, 2026): (please provide)`);
+  }
+
+  if (k.time) {
+    lines.push(`  • Preferred time: ${k.time} — reply to confirm or correct`);
+  } else {
+    lines.push(`  • Preferred time: (please provide)`);
+  }
+
+  const closer = pick([
+    "Once we have these details, we can confirm your booking.",
+    "Please reply with these and we will get your appointment locked in.",
+    "Send these over and we will finalize your booking.",
+  ]);
+
   const body = [
     greeting(o.firstName),
     opener,
-    `${askIntro} ${asks}. Once we have that, we can proceed with your booking.`,
+    `Here is what we need to finalize your booking:\n\n${lines.join("\n")}`,
+    closer,
     signoff(),
   ].join("\n\n");
-  return { subject: "A couple of details needed to complete your booking", body };
+
+  return { subject: `Details needed for your ${svc} booking`, body };
+}
+
+export function tooFarAheadEmail(o: {
+  firstName?: string;
+}): { subject: string; body: string } {
+  const opener = pick([
+    "Thank you for thinking ahead.",
+    "We appreciate you planning in advance.",
+    "Thank you for reaching out about a future booking.",
+  ]);
+  const body = [
+    greeting(o.firstName),
+    `${opener} Our scheduling only opens up to six months ahead, so we are not able to book that date just yet.`,
+    "Please reach back out when you are within six months of your preferred date and we will get you set up right away.",
+    signoff(),
+  ].join("\n\n");
+  return { subject: "Scheduling window — Glow Cleaning", body };
 }
 
 export function rescheduleConfirmation(o: {
