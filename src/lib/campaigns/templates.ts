@@ -1,7 +1,3 @@
-// ============================================================
-// CAMPAIGN TEMPLATES — mechanical merge, no LLM
-// ============================================================
-
 interface Template {
   id: string;
   name: string;
@@ -64,8 +60,8 @@ export function getTemplate(
   return registry.get(id) || null;
 }
 
-export function listTemplates(): { id: string; name: string }[] {
-  return TEMPLATES.map((t) => ({ id: t.id, name: t.name }));
+export function listTemplates(): { id: string; name: string; subject: string }[] {
+  return TEMPLATES.map((t) => ({ id: t.id, name: t.name, subject: t.subject }));
 }
 
 export function render(

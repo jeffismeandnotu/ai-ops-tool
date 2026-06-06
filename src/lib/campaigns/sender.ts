@@ -1,19 +1,24 @@
 import { google } from "googleapis";
 import { neon } from "@neondatabase/serverless";
 
-// ============================================================
-// CAMPAIGN EMAIL SENDER — self-contained, no agent imports
-// ============================================================
+export interface SendOpts {
+  scheduledAt?: string;
+}
+
+export interface SendResult {
+  ok: boolean;
+  id?: string;
+  error?: string;
+}
 
 export interface EmailSender {
   send(
     to: string,
     subject: string,
-    body: string
-  ): Promise<{ ok: boolean; id?: string; error?: string }>;
+    body: string,
+    opts?: SendOpts
+  ): Promise<SendResult>;
 }
-
-// --- Gmail sender (self-contained OAuth, mirrors gmail.ts pattern) ---
 
 function encodeSubject(s: string): string {
   return /[^\x00-\x7F]/.test(s)
@@ -49,8 +54,9 @@ export class GmailSender implements EmailSender {
   async send(
     to: string,
     subject: string,
-    body: string
-  ): Promise<{ ok: boolean; id?: string; error?: string }> {
+    body: string,
+    _opts?: SendOpts
+  ): Promise<SendResult> {
     try {
       const accessToken = await getAccessToken();
       const auth = new google.auth.OAuth2();
@@ -80,8 +86,6 @@ export class GmailSender implements EmailSender {
   }
 }
 
-// --- Resend sender (full implementation, inert unless RESEND_API_KEY set) ---
-
 export class ResendSender implements EmailSender {
   private apiKey: string;
   private from: string;
@@ -104,21 +108,27 @@ export class ResendSender implements EmailSender {
   async send(
     to: string,
     subject: string,
-    body: string
-  ): Promise<{ ok: boolean; id?: string; error?: string }> {
+    body: string,
+    opts?: SendOpts
+  ): Promise<SendResult> {
     try {
+      const payload: Record<string, unknown> = {
+        from: this.from,
+        to: [to],
+        subject,
+        text: body,
+      };
+      if (opts?.scheduledAt) {
+        payload.send_at = opts.scheduledAt;
+      }
+
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          from: this.from,
-          to: [to],
-          subject,
-          text: body,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -133,8 +143,6 @@ export class ResendSender implements EmailSender {
     }
   }
 }
-
-// --- Factory ---
 
 export function getSender(): EmailSender {
   const provider = (
