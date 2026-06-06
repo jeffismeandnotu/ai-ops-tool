@@ -1,12 +1,38 @@
 # Session Handoff — ai-ops-tool
 
-Last updated: 2026-06-05
+Last updated: 2026-06-06
 
 ---
 
 ## What Changed This Session
 
-### 1. Rate Limit — 10/sender/day (commits `94675a5`, `b7a8bce`)
+### 1. Campaign Dashboard Fix (commit `d905a98`)
+
+Two bugs prevented "Run now (test)" from working in the Scheduled Emails dashboard panel.
+
+#### Bug A: Missing DB columns on production
+- **File**: `src/lib/campaigns/audience.ts`
+- `campaign_recipients` table was created before `opted_out` and `status` columns were added to the schema
+- `CREATE TABLE IF NOT EXISTS` doesn't alter existing tables, so production DB lacked these columns
+- `getActiveRecipients()` queried `WHERE opted_out = false` → crashed with `column "opted_out" does not exist`
+- **Fix**: Added `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for both columns in `ensureTable()` — idempotent on new and existing tables
+
+#### Bug B: Campaign status never updated after manual run
+- **File**: `src/lib/campaigns/engine.ts`
+- `runScheduled()` never updated campaign status from `'scheduled'` to `'sent'` — only `runDue()` (cron path) did
+- After clicking "Run now (test)", campaign stayed `'scheduled'`, buttons remained active, cron could re-run it later
+- **Fix**: Added `UPDATE scheduled_campaigns SET status = 'sent'` at the end of both test-mode and live-mode paths in `runScheduled()`
+
+#### Verified on production
+- Preview mode: renders 2 emails, status stays `'scheduled'` (correct — no sends)
+- Test mode: 2 emails sent to `biggguy0047@gmail.com`, status updated to `'sent'`
+- Dashboard buttons disappear after run (status no longer `'scheduled'`)
+
+---
+
+## Prior Session Changes
+
+### Prior 1. Rate Limit — 10/sender/day (commits `94675a5`, `b7a8bce`)
 
 The per-sender rate limit was widened from 5 replies per hour to **10 replies per day**.
 
@@ -17,7 +43,7 @@ The per-sender rate limit was widened from 5 replies per hour to **10 replies pe
 - Global cap (`MAX_INBOUND_PER_HOUR`) unchanged
 - **Action needed**: If the old env var was set in Vercel, rename it to `MAX_REPLIES_PER_SENDER_DAY`. If unset, the new default 10 applies.
 
-### 2. Phase-2 Consolidated Checklist (commits `92fea60`, `b7a8bce`)
+### Prior 2. Phase-2 Consolidated Checklist (commits `92fea60`, `b7a8bce`)
 
 After a customer confirms a service (e.g. "yes, regular clean"), the agent now sends **one email** with all 5 required booking fields, not individual drip requests.
 
@@ -28,7 +54,7 @@ After a customer confirms a service (e.g. "yes, regular clean"), the agent now s
 - The `compose_and_send` tool schema has new inputs: `serviceName`, `knownName`, `knownAddress`, `knownDate`, `knownTime`
 - Prompt phase-2 instructions updated to require the consolidated checklist
 
-### 3. Full-Year Date Format (commit `92fea60`)
+### Prior 3. Full-Year Date Format (commit `92fea60`)
 
 All customer-facing dates now include the year.
 
@@ -37,7 +63,7 @@ All customer-facing dates now include the year.
 - `prettySlot("2026-06-11 08:00")` → `"Wednesday, June 11, 2026 at 8:00 AM"`
 - Standing prompt rule: always write dates as `Month D, YYYY`
 
-### 4. 6-Month Booking Horizon (commits `92fea60`, `580630d`, `b7a8bce`)
+### Prior 4. 6-Month Booking Horizon (commits `92fea60`, `580630d`, `b7a8bce`)
 
 Hard code-level lock — no booking created or offered beyond 6 calendar months from today.
 
@@ -49,7 +75,7 @@ Hard code-level lock — no booking created or offered beyond 6 calendar months 
 - New `too_far_ahead` template in `compose_and_send` enum
 - Prompt rule added to RULES.md and automation prompt
 
-### 5. Campaign Engine (commits `57a6113`, `d0f2e95`, `48dca55`, `fd0b0a9`)
+### Prior 5. Campaign Engine (commits `57a6113`, `d0f2e95`, `48dca55`, `fd0b0a9`)
 
 Standalone recurring-email system, fully isolated from the agent/automation code.
 
